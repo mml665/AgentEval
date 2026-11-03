@@ -13,6 +13,7 @@ EVALUATORS = [
      "config": {"forbidden": ["delete_order"]}},
     {"instance_id": "arguments", "id": "tool_arguments"},
     {"instance_id": "steps", "id": "trajectory"},
+    {"instance_id": "per_call", "id": "tool_call"},
     {"instance_id": "retrieval", "id": "rag", "config": {"metric": "recall", "k": 5}},
 ]
 

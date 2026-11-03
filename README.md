@@ -2,7 +2,7 @@
 
 面向异构 Agent 的自动化评测与回归分析平台。
 
-**当前版本：0.3.0 / 可靠执行 + LangGraph + LLM Judge。** 已实现 React 工作台、持久化投递、独立 Celery Worker、数据库租约与故障恢复、HTTP/Python/LangGraph 接入、规则与结构化 Judge 评分、版本回归。真实模型质量校准和完整安全/运维验收仍待完成。
+**当前版本：0.4.0。** 已交付运行健康与恢复、Judge 预算快照、分页批量读取、JSON/CSV/HTML 导出、结构化 Trace 树与时间线、逐调用工具评分及独立 Retriever/Reranker 评测。执行、LangGraph、Judge 与回归能力沿用 0.3 协议；真实裁判校准和完整生产安全验收仍待完成。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -81,7 +81,7 @@ npm run test:e2e
 .venv/Scripts/python.exe -m examples.demo
 ```
 
-示例会创建项目、两个 Agent 版本、两条用例及五个评分项。它验证以下真实结果：
+示例会创建项目、两个 Agent 版本、两条用例及六个评分项。它验证以下真实结果：
 
 ```text
 基线成功率：100%
@@ -130,6 +130,12 @@ $env:PYTHONPATH = 'backend'
 | 回归 | POST `/api/v1/regressions/compare` |
 | 投递/审计/裁判调用 | GET `/api/v1/evaluations/{id}/work-items`、`audit`、`judge-calls` |
 | 管理员释放占用 | POST `/api/v1/executions/{id}/release-capacity`（另需 `X-Admin-Token` 与理由） |
+| 工作台批量分页 | GET `/api/v1/workspace/{project_id}`，支持各资源 offset/limit |
+| 就绪 / 运行健康 | GET `/ready`、`/api/v1/operations/health` |
+| 结构化 Trace | GET `/api/v1/executions/{id}/trace` |
+| Judge 预算 | GET `/api/v1/evaluations/{id}/judge-budget` |
+| 固定批次导出 | GET `/api/v1/evaluations/{id}/export?grading_batch_id=…&format=json`（另支持 csv/html） |
+| 独立组件 | GET `/api/v1/components`；POST `/api/v1/component-evaluations` |
 | 实际支持能力 | GET `/api/v1/capabilities` |
 
 列表当前使用 offset/limit。发布版本无更新接口。创建 Run 支持 `Idempotency-Key` 请求头；相同键和请求返回原 Run，不同请求返回 409。报告返回实际 `grading_batch_id`；历史查询应显式传入该 ID。
@@ -178,10 +184,20 @@ Judge 每个评分项最多两次请求，只对传输错误与指定暂时状�
 
 组合验证：`python scripts/queue_smoke.py` 启动真实 Celery 进程，默认使用显式标注的 fakeredis 协议模拟及裁判模拟。设置 `AGENTEVAL_TEST_BROKER_URL` 后使用真实 Redis；CI 同时使用真实 Redis 和 PostgreSQL。测试不调用付费模型，不能作为实际 Judge 准确率证明。
 
-更多运行与恢复约定见 [M2 执行与 Judge 说明](docs/M2_EXECUTION_AND_JUDGE.md)。
+0.4 新功能：
+
+- 工作台列表使用服务端分页和批量版本关联查询，不再每次轮询拉取所有资源；任务用例表分页，评分证据按执行 ID 获取。
+- “运行健康”页面区分存活与就绪，展示 API 维护循环、Worker/Dispatcher 心跳、积压和 blocked；临时异常进入退避恢复。
+- Judge 上限在 Run 创建时写入 Manifest 和独立预算记录，环境变量变化不改变已创建 Run；旧运行首次使用时固定，并明确标注来源。
+- “查看证据”展示 OTel 树、时间线与事件。未结束 Span 显示“未结束”，截断/缺失观测会标记 partial/wrapper_only，不补造内部步骤。
+- `tool_call` 按唯一 call_id 检查同名多次调用、参数 Schema/字段值、结果 Schema/期望值、先后依赖和声明式结果使用规则。默认不允许未声明的额外调用。
+- “组件评测”直接启动 Retriever/Reranker，无需注册业务 Agent；也可创建样例数据与评分方案体验。
+- 报告导出必须指定评分批次；CSV 处理公式注入，HTML 转义内容，JSON 提供内容哈希。导出按字段名做基础脱敏，业务文本仍需项目方审核。
+
+详细接口与验收说明见 [0.4 交付说明](docs/V0.4_ACCEPTANCE.md)。更多运行与恢复约定见 [M2 执行与 Judge 说明](docs/M2_EXECUTION_AND_JUDGE.md)。
 
 ## 当前使用边界
 
 当前面向单可信团队。local 与 celery 模式采用相同数据库工作项、租约和结果保护协议；API 重启不撤销有效 Worker 租约。租约过期且结果未确认时标记 unknown，未知副作用不自动重跑，并保留容量待管理员核验。取消可终止本地插件进程，但中断 HTTP 等待不代表远端已停止。
 
-当前观测为内联结构化通道，尚不是完整 OTel Trace。输入输出尚未实现业务敏感数据的完整脱敏、制品存储和留存清理，请使用脱敏测试数据。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。
+已使用 OpenTelemetry SDK 记录本平台埋点范围内的父子 Span、事件、输入输出和耗时，并通过增量 IPC 保留失败或超时前的轨迹；黑盒内部未提供的观测不生成。输入输出尚未实现业务敏感数据的完整脱敏、制品存储和留存清理，请使用脱敏测试数据。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。

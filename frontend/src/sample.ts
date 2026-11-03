@@ -8,6 +8,7 @@ export const evaluators = [
   { instance_id: 'tools', id: 'tool_selection', required: true, hard_constraint: true, config: { forbidden: ['delete_order'] } },
   { instance_id: 'arguments', id: 'tool_arguments', required: true },
   { instance_id: 'steps', id: 'trajectory', required: true },
+  { instance_id: 'per_call', id: 'tool_call', required: true },
   { instance_id: 'retrieval', id: 'rag', required: true, config: { metric: 'recall', k: 5 } },
 ];
 export const caps = ['tool_calls', 'workflow_steps', 'retrieval_results'];

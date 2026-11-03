@@ -25,7 +25,8 @@ from agenteval.evaluators import CAPABILITIES, validate_case
 from agenteval.limits import RequestLimit
 from agenteval.service import LocalRunner, compare, records, report, snapshot
 from agenteval.durable import Coordinator, enqueue
-from agenteval.db import WorkItem, AuditEvent, JudgeCall
+from agenteval.db import WorkItem, AuditEvent, JudgeCall, JudgeBudget, TraceSpan
+from agenteval.health import LoopHealth, resilient_tick, status as health_status
 from agenteval.contracts import ReleaseCapacity
 
 
@@ -38,29 +39,42 @@ def create_app(settings=None):
     engine, sessions = make_database(settings.database_url)
     runner = LocalRunner(sessions, settings)
 
+    loop_health = LoopHealth("api-maintenance")
+    maintenance = None
+
     @asynccontextmanager
     async def lifespan(app):
+        nonlocal maintenance
         if len(settings.api_token) < 16:
             raise RuntimeError("Set AGENTEVAL_API_TOKEN to a random token of at least 16 characters")
         coordinator = runner.coordinator
+        pump = None
+        async def tick():
+            nonlocal pump
+            await asyncio.to_thread(coordinator.recover)
+            if pump is not None and pump.done():
+                previous, pump = pump, None
+                previous.result()
+            if settings.execution_mode == "local" and pump is None:
+                with sessions() as session:
+                    ids = list(session.scalars(select(WorkItem.id).where(
+                        WorkItem.status.in_(["pending", "published"]),
+                        WorkItem.created_at < datetime.fromtimestamp(time.time() - 2, timezone.utc)).limit(1)))
+                if ids:
+                    pump = asyncio.create_task(coordinator.drain())
         async def maintain():
             while True:
-                await asyncio.to_thread(coordinator.recover)
-                if settings.execution_mode == "local":
-                    # Direct creation handles fresh jobs; maintenance resumes older work.
-                    with sessions() as session:
-                        ids = list(session.scalars(select(WorkItem.id).where(
-                            WorkItem.status.in_(["pending", "published"]),
-                            WorkItem.created_at < datetime.fromtimestamp(time.time() - 2, timezone.utc))))
-                    if ids:
-                        await coordinator.drain()
-                await asyncio.sleep(1)
+                delay = await resilient_tick(loop_health, tick, sessions)
+                await asyncio.sleep(delay)
+        await resilient_tick(loop_health, tick, sessions)
         maintenance = asyncio.create_task(maintain())
         try:
             yield
         finally:
             maintenance.cancel()
-            await asyncio.gather(maintenance, return_exceptions=True)
+            if pump is not None:
+                pump.cancel()
+            await asyncio.gather(maintenance, *([pump] if pump else []), return_exceptions=True)
             engine.dispose()
 
     app = FastAPI(title="AgentEval", version=__version__, lifespan=lifespan,
@@ -110,6 +124,21 @@ def create_app(settings=None):
     def health():
         return {"status": "ok"}
 
+    @app.get("/ready")
+    def readiness():
+        try:
+            detail = health_status(sessions, settings, loop_health, maintenance is not None and not maintenance.done())
+            return JSONResponse(status_code=200 if detail["ready"] else 503, content={"ready": detail["ready"]})
+        except Exception:
+            return JSONResponse(status_code=503, content={"ready": False})
+
+    @router.get("/operations/health")
+    def operation_health():
+        try:
+            return health_status(sessions, settings, loop_health, maintenance is not None and not maintenance.done())
+        except Exception:
+            return JSONResponse(status_code=503, content={"ready": False, "database": "unavailable"})
+
     @router.get("/openapi.json")
     def openapi():
         return app.openapi()
@@ -150,9 +179,9 @@ def create_app(settings=None):
         return add(session, AgentVersion(agent_id=agent_id, **body.model_dump(), content_hash=digest(body.model_dump())))
 
     @router.get("/agents/{agent_id}/versions")
-    def agent_versions(agent_id: str, session=Depends(database)):
+    def agent_versions(agent_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
         get(session, Agent, agent_id)
-        return {"items": [serialize(x) for x in records(session, AgentVersion, agent_id=agent_id)]}
+        return page(session, AgentVersion, offset, limit, agent_id=agent_id)
 
     @router.post("/benchmarks", status_code=201)
     def create_benchmark(body: BenchmarkCreate, session=Depends(database)):
@@ -177,9 +206,9 @@ def create_app(settings=None):
         return serialize(version)
 
     @router.get("/benchmarks/{benchmark_id}/versions")
-    def benchmark_versions(benchmark_id: str, session=Depends(database)):
+    def benchmark_versions(benchmark_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
         get(session, Benchmark, benchmark_id)
-        return {"items": [serialize(x) for x in records(session, BenchmarkVersion, benchmark_id=benchmark_id)]}
+        return page(session, BenchmarkVersion, offset, limit, benchmark_id=benchmark_id)
 
     @router.get("/benchmark-versions/{version_id}/cases")
     def cases(version_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
@@ -216,6 +245,13 @@ def create_app(settings=None):
         from agenteval.contracts import EvaluatorSpec
         specs = [EvaluatorSpec.model_validate(x) for x in profile.definition["evaluators"]]
         cases = records(session, TestCase, benchmark_version_id=benchmark_version.id)
+        if agent.adapter_type == "component":
+            from agenteval.components import COMPONENTS
+            from jsonschema import Draft202012Validator
+            component = COMPONENTS[version.configuration["plugin_id"]]
+            for case in cases:
+                if not Draft202012Validator(component["input_schema"]).is_valid(case.definition["input"]):
+                    raise HTTPException(422, detail={"code": "COMPONENT_INPUT_INVALID", "case_key": case.case_key})
         core = set(profile.definition["gate"]["core_case_keys"])
         if core - {c.case_key for c in cases}:
             raise HTTPException(422, detail={"code": "UNKNOWN_CORE_CASE"})
@@ -241,6 +277,7 @@ def create_app(settings=None):
         run = Run(project_id=agent.project_id, **body.model_dump(), manifest={}, manifest_hash="")
         session.add(run)
         session.flush()
+        session.add(JudgeBudget(run_id=run.id, max_calls=settings.judge_max_calls, policy_source="run_creation"))
         run.manifest = snapshot(session, run, settings)
         run.manifest_hash = digest(run.manifest)
         batch = GradingBatch(run_id=run.id, revision=0, grading_manifest={
@@ -311,15 +348,24 @@ def create_app(settings=None):
         return batch
 
     @router.get("/evaluations/{run_id}/report")
-    def run_report(run_id: str, grading_batch_id: str | None = None, session=Depends(database)):
-        return report(session, batch_for(session, run_id, grading_batch_id))
+    def run_report(run_id: str, grading_batch_id: str | None = None, include_trials: bool = True,
+                   trials_offset: int = Query(0, ge=0), trials_limit: int | None = Query(None, ge=1, le=100),
+                   trial_filter: str = Query("all", pattern="^(all|bad)$"), session=Depends(database)):
+        data = report(session, batch_for(session, run_id, grading_batch_id))
+        rows = data["trials"] if trial_filter == "all" else [r for r in data["trials"] if r["verdict"] != "passed"]
+        data["trials_total"] = len(rows)
+        data["trials"] = rows[trials_offset:trials_offset + trials_limit] if trials_limit else rows
+        if not include_trials:
+            data["trials"] = []
+        return data
 
     @router.get("/evaluations/{run_id}/results")
     def results(run_id: str, grading_batch_id: str | None = None, offset: int = Query(0, ge=0),
-                limit: int = Query(50, ge=1, le=100), session=Depends(database)):
+                limit: int = Query(50, ge=1, le=100), execution_id: str | None = None, session=Depends(database)):
         batch = batch_for(session, run_id, grading_batch_id)
         return {"grading_batch_id": batch.id,
-                **page(session, EvaluationResult, offset, limit, batch_id=batch.id)}
+                **page(session, EvaluationResult, offset, limit, batch_id=batch.id,
+                       **({"execution_id": execution_id} if execution_id else {}))}
 
     @router.get("/evaluations/{run_id}/bad-cases")
     def bad_cases(run_id: str, grading_batch_id: str | None = None, session=Depends(database)):
@@ -340,7 +386,9 @@ def create_app(settings=None):
         return {"trace_id": trace_id, "execution_id": execution.id,
                 "observations": response.get("observations", {}),
                 "complete_channels": response.get("observations_complete", []),
-                "format": "Structured observation channels; full OTel spans not yet implemented"}
+                "spans": [r.record for r in session.scalars(select(TraceSpan).filter_by(execution_id=execution.id))],
+                "completeness": execution.trace_completeness,
+                "format": "OpenTelemetry spans and structured observation channels"}
 
     @router.post("/regressions/compare", status_code=201)
     def create_comparison(body: CompareCreate, session=Depends(database)):
@@ -397,6 +445,8 @@ def create_app(settings=None):
             locked.add(AuditEvent(run_id=run.id, action="ADMIN_CAPACITY_RELEASED", detail={"execution_id": execution_id, "reason": body.reason}))
         return {"released": True, "verdict_unchanged": True, "execution_id": execution_id}
 
+    from agenteval.extensions import install
+    install(router, settings, sessions, database, get, serialize, create_run, runner)
     app.include_router(router)
     # Hash routes stay in the browser, so API 404s never fall back to index.html.
     # Public static files contain no credentials or business data.

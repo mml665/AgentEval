@@ -13,6 +13,8 @@ from agenteval.contracts import EvaluatorSpec
 from agenteval.db import (AuditEvent, EvaluationResult, Execution, GradingBatch, Project,
                          Run, TestCase, Trial, TrialAssessment, WorkItem)
 from agenteval.evaluators import evaluate, verdict
+from agenteval.tracing import invoke_traced, persist_trace, validated
+from agenteval.db import TraceSpan
 
 TERMINAL = {"completed", "agent_failed", "timed_out", "infrastructure_failed", "outcome_unknown", "cancelled"}
 
@@ -127,7 +129,26 @@ class Coordinator:
                        "case_key": case.case_key, "trace_enabled": True}
         started = time.monotonic()
         response, error, status = None, None, "outcome_unknown"
-        task = asyncio.create_task(invoke(agent["adapter_type"], agent["configuration"], request, timeout, self.settings))
+        def on_span(row):
+            with self.locked(item.project_id) as session:
+                current = session.get(WorkItem, item_id)
+                if not self.fenced(current, owner, epoch):
+                    return
+                observed = session.get(Execution, item.target_id)
+                existing = list(session.scalars(select(TraceSpan).filter_by(execution_id=observed.id)))
+                if existing and observed.trace_id != row.get("trace_id"):
+                    return
+                parent = row.get("parent_span_id")
+                if parent is not None and parent not in {s.span_id for s in existing}:
+                    return
+                previous = next((s for s in existing if s.span_id == row.get("span_id")), None)
+                if previous and previous.parent_span_id != parent:
+                    return
+                validated([row], row.get("trace_id"), parent)
+                observed.trace_id, observed.trace_completeness = row["trace_id"], "partial"
+                persist_trace(session, observed.id, [row])
+        capture = {"on_span": on_span}
+        task = asyncio.create_task(invoke_traced(agent["adapter_type"], agent["configuration"], request, timeout, self.settings, capture))
         try:
             async with asyncio.timeout(timeout):
                 while not task.done():
@@ -146,7 +167,8 @@ class Coordinator:
                     status = "completed"
         except (TimeoutError, httpx.TimeoutException):
             status, error = "timed_out", {"code": "AGENT_TIMEOUT", "remote_outcome": "unknown"}
-        except AgentFailure:
+        except AgentFailure as exc:
+            response = exc.response
             status, error = "agent_failed", {"code": "AGENT_PROTOCOL_OR_EXECUTION_ERROR"}
         except httpx.RequestError:
             status, error = "outcome_unknown", {"code": "HTTP_TRANSPORT_ERROR", "remote_outcome": "unknown"}
@@ -156,9 +178,11 @@ class Coordinator:
             if not task.done():
                 task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-        self.finish(item_id, owner, epoch, status, response, error, (time.monotonic() - started) * 1000)
+        if response is not None:
+            response["trace_completeness"] = capture.get("completeness", "unavailable")
+        self.finish(item_id, owner, epoch, status, response, error, (time.monotonic() - started) * 1000, capture)
 
-    def finish(self, item_id, owner, epoch, status, response=None, error=None, latency=None):
+    def finish(self, item_id, owner, epoch, status, response=None, error=None, latency=None, trace_capture=None):
         with self.locked(self.project(item_id)) as session:
             item = session.get(WorkItem, item_id)
             execution = session.get(Execution, item.target_id)
@@ -167,6 +191,10 @@ class Coordinator:
                 session.add(AuditEvent(run_id=item.run_id, action="STALE_RESULT_REJECTED", detail={"work_id": item.id, "epoch": epoch}))
                 return False
             execution.status, execution.response, execution.error = status, response, error
+            if trace_capture and trace_capture.get("spans"):
+                execution.trace_id = trace_capture["trace_id"]
+                execution.trace_completeness = trace_capture.get("completeness", "partial")
+                persist_trace(session, execution.id, trace_capture["spans"])
             execution.latency_ms = round(latency, 3) if latency is not None else None
             run = session.get(Run, item.run_id)
             unknown_effect = run.manifest["agent"].get("effects", "unknown") != "read_only"
@@ -209,18 +237,19 @@ class Coordinator:
             specs = [EvaluatorSpec.model_validate(x) for x in batch.grading_manifest["evaluators"]]
             frozen_judge = batch.grading_manifest.get("judge", {})
             judge_settings = replace(self.settings, judge_endpoint=frozen_judge.get("endpoint", self.settings.judge_endpoint),
-                                     judge_model=frozen_judge.get("model", self.settings.judge_model))
+                                     judge_model=frozen_judge.get("model", self.settings.judge_model),
+                                     judge_max_calls=frozen_judge.get("max_calls", self.settings.judge_max_calls))
             trials = list(session.scalars(select(Trial).filter_by(run_id=item.run_id)))
             work = []
-            for trial in trials:
-                case = session.get(TestCase, trial.case_id)
-                for execution in session.scalars(select(Execution).filter_by(trial_id=trial.id).order_by(Execution.attempt_index)):
-                    work.append((execution, case.definition))
+            cases = {c.id: c for c in session.scalars(select(TestCase).where(TestCase.benchmark_version_id == session.get(Run, item.run_id).benchmark_version_id))}
+            trial_map = {t.id: t for t in trials}
+            executions = list(session.scalars(select(Execution).join(Trial, Execution.trial_id == Trial.id).where(Trial.run_id == item.run_id).order_by(Execution.attempt_index)))
+            for execution in executions:
+                work.append((execution, cases[trial_map[execution.trial_id].case_id].definition))
+            scored = {(r.execution_id, r.instance_id) for r in session.scalars(select(EvaluationResult).filter_by(batch_id=batch.id))}
         for execution, case in work:
             for spec in specs:
-                with self.sessions() as session:
-                    existing = session.scalar(select(EvaluationResult).filter_by(batch_id=batch.id, execution_id=execution.id, instance_id=spec.instance_id))
-                if existing:
+                if (execution.id, spec.instance_id) in scored:
                     continue
                 if spec.id == "llm_judge" and execution.status == "completed":
                     value = judge(spec, case, execution.response or {}, judge_settings, self, item_id, owner, epoch, batch.id, execution.id)
@@ -231,17 +260,26 @@ class Coordinator:
                     if not self.fenced(current, owner, epoch):
                         return
                     session.add(EvaluationResult(batch_id=batch.id, execution_id=execution.id, instance_id=spec.instance_id, result=value))
+                scored.add((execution.id, spec.instance_id))
         with self.locked(item.project_id) as session:
             current = session.get(WorkItem, item_id)
             if not self.fenced(current, owner, epoch):
                 return
+            all_results = list(session.scalars(select(EvaluationResult).filter_by(batch_id=batch.id)))
+            all_executions = list(session.scalars(select(Execution).join(Trial, Execution.trial_id == Trial.id).where(Trial.run_id == item.run_id).order_by(Execution.attempt_index)))
+            from collections import defaultdict
+            grouped_executions, grouped_results = defaultdict(list), defaultdict(list)
+            for execution in all_executions:
+                grouped_executions[execution.trial_id].append(execution)
+            for score in all_results:
+                grouped_results[score.execution_id].append(score.result)
             for trial in trials:
-                executions = list(session.scalars(select(Execution).filter_by(trial_id=trial.id).order_by(Execution.attempt_index)))
+                executions = grouped_executions[trial.id]
                 canonical = executions[-1]
-                results = list(session.scalars(select(EvaluationResult).filter_by(batch_id=batch.id)))
-                selected = [r.result for r in results if r.execution_id == canonical.id]
-                historical_hard = [r.result for r in results if r.execution_id in {e.id for e in executions[:-1]}
-                                   and r.result["hard_constraint"] and r.result["passed"] is False]
+                results = all_results
+                selected = grouped_results[canonical.id]
+                historical_hard = [r for e in executions[:-1] for r in grouped_results[e.id]
+                                   if r["hard_constraint"] and r["passed"] is False]
                 decision, reasons = verdict(canonical.status, selected + historical_hard)
                 session.add(TrialAssessment(trial_id=trial.id, batch_id=batch.id, selected_execution_id=canonical.id, verdict=decision, reasons=reasons))
             session.get(GradingBatch, batch.id).status = "completed"

@@ -43,3 +43,7 @@ export function Modal({ title, children, onClose, wide = false }: { title: strin
   useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
   return <dialog ref={ref} className={`modal ${wide ? 'modal-wide' : ''}`} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget) onClose(); }}><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭弹窗"><Icon name="close"/></button></div>{children}</dialog>;
 }
+
+export function Pager({ page, total, size = 10, onChange }: { page: number; total: number; size?: number; onChange: (page: number) => void }) {
+  return <div className="pager" aria-label="分页"><span>共 {total} 条 · 第 {page + 1} / {Math.max(1, Math.ceil(total / size))} 页</span><button className="button secondary" disabled={page === 0} onClick={() => onChange(page - 1)}>上一页</button><button className="button secondary" disabled={(page + 1) * size >= total} onClick={() => onChange(page + 1)}>下一页</button></div>;
+}

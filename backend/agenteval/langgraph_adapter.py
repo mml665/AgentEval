@@ -2,6 +2,7 @@
 from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 from agenteval.plugins import GRAPH_PLUGINS
+from agenteval.tracing import active_recorder, record_tool, event
 
 
 class OrderState(TypedDict, total=False):
@@ -14,12 +15,19 @@ class OrderState(TypedDict, total=False):
 def order_graph():
     def lookup(state):
         order_id = state["input"].get("order_id", "1001")
-        return {"output": {"order_id": order_id, "status": "shipped" if order_id == "1001" else "processing"},
-                "tool_calls": [{"name": "get_order", "arguments": {"order_id": order_id}, "status": "ok"}],
+        def get_order(order_id):
+            return {"order_id": order_id, "status": "shipped" if order_id == "1001" else "processing"}
+        with active_recorder.get().span("lookup", "workflow", state):
+            output, call = record_tool("get_order", {"order_id": order_id}, get_order, "order.lookup")
+            event("state.update", {"output": output})
+        return {"output": output,
+                "tool_calls": [call],
                 "retrieval_results": ["policy-shipped", "policy-refund"]}
 
     def respond(state):
-        return {"output": state["output"]}
+        with active_recorder.get().span("respond", "workflow", state):
+            event("tool.result_used", {"call_id": "order.lookup", "output": state["output"]})
+            return {"output": state["output"]}
 
     return (StateGraph(OrderState).add_node("lookup", lookup).add_node("respond", respond)
             .add_edge(START, "lookup").add_edge("lookup", "respond").add_edge("respond", END).compile())

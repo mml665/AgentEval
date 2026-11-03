@@ -110,6 +110,9 @@ def main():
             wait(lambda: get(f"evaluations/{run['id']}")["status"] == "completed")
             report = get(f"evaluations/{run['id']}/report")
             assert report["success_rate"] == 1 and report["attempts"] == 2
+            workspace = get(f"workspace/{project['id']}")
+            assert workspace["totals"]["runs"] == 1
+            assert get(f"executions/{report['trials'][0]['execution_id']}/trace")["spans"]
             assert len(get(f"evaluations/{run['id']}/judge-calls")["items"]) == 2
             # Actual worker crash during an invocation: no implicit second operation.
             slow = post("agents", {"project_id": project["id"], "name": "Slow fixture", "adapter_type": "python"})
@@ -117,13 +120,15 @@ def main():
             slow_profile = post("profile-versions", {"project_id": project["id"], "name": "Crash", "version": "1",
                 "evaluators": [{"instance_id": "answer", "id": "exact_match"}], "execution": {"timeout_seconds": 1.5}})
             crashing = post("evaluations", {**body, "agent_version_id": slow_version["id"], "profile_version_id": slow_profile["id"]})
-            wait(lambda: any(i["status"] == "running" for i in get(f"evaluations/{crashing['id']}/work-items")["items"]))
+            running_item = wait(lambda: next((i for i in get(f"evaluations/{crashing['id']}/work-items")["items"] if i["status"] == "running"), None))
+            wait(lambda: get(f"executions/{running_item['target_id']}/trace")["spans"])
             stop(worker)
             wait(lambda: any(i["status"] == "blocked" for i in get(f"evaluations/{crashing['id']}/work-items")["items"]))
             worker = start("worker")
             wait(lambda: get(f"evaluations/{crashing['id']}")["status"] == "completed")
             crash_report = get(f"evaluations/{crashing['id']}/report")
             assert crash_report["counts"]["unknown"] >= 1 and crash_report["attempts"] == 2
+            assert get(f"executions/{running_item['target_id']}/trace")["spans"]
             output = {"broker": "real-redis" if redis_fixture is None else "fakeredis-protocol-fixture",
                       "api_restart_preserved_queue": True, "langgraph_success_rate": report["success_rate"],
                       "judge_protocol_calls": 2, "worker_crash_unknown": crash_report["counts"]["unknown"],

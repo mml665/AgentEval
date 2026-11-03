@@ -50,7 +50,15 @@ export function createAPI(token: string, unauthorized: () => void) {
       if (offset >= 10000) throw new APIError(0, '当前项目数据超过工作台加载上限，请通过 API 分页查询。');
     }
   }
-  return { get: <T,>(path: string) => request<T>(path), post: <T,>(path: string, body?: unknown) => request<T>(path, body, 'POST'), all };
+  async function download(path: string) {
+    const response = await fetch(`/api/v1/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) { if (response.status === 401) unauthorized(); throw new APIError(response.status, '导出失败，请确认评分批次已完成。'); }
+    const url = URL.createObjectURL(await response.blob());
+    const anchor = document.createElement('a'); anchor.href = url;
+    anchor.download = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || 'agenteval-report.json';
+    anchor.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  return { download, get: <T,>(path: string) => request<T>(path), post: <T,>(path: string, body?: unknown) => request<T>(path, body, 'POST'), all };
 }
 export type API = ReturnType<typeof createAPI>;
 

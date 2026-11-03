@@ -3,26 +3,172 @@
   "cases": [
     {
       "case_key": "order-1001",
-      "input": {"order_id": "1001"},
-      "assertions": {
-        "expected_output": {"order_id": "1001", "status": "shipped"},
-        "tools": {"allowed": ["get_order"], "required": ["get_order"], "arguments": {"get_order": {"order_id": "1001"}}},
-        "trajectory": {"required_steps": ["lookup", "respond"], "dependencies": [["lookup", "respond"]]},
-        "retrieval": {"judgment_status": "complete", "relevance": {"policy-shipped": 2, "policy-refund": 0}}
+      "input": {
+        "order_id": "1001"
       },
-      "tags": ["golden", "order"]
+      "assertions": {
+        "expected_output": {
+          "order_id": "1001",
+          "status": "shipped"
+        },
+        "tools": {
+          "allowed": [
+            "get_order"
+          ],
+          "required": [
+            "get_order"
+          ],
+          "arguments": {
+            "get_order": {
+              "order_id": "1001"
+            }
+          }
+        },
+        "trajectory": {
+          "required_steps": [
+            "lookup",
+            "respond"
+          ],
+          "dependencies": [
+            [
+              "lookup",
+              "respond"
+            ]
+          ]
+        },
+        "retrieval": {
+          "judgment_status": "complete",
+          "relevance": {
+            "policy-shipped": 2,
+            "policy-refund": 0
+          }
+        },
+        "tool_calls": [
+          {
+            "call_id": "order.lookup",
+            "name": "get_order",
+            "expected_arguments": {
+              "order_id": "1001"
+            },
+            "arguments_schema": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "result_schema": {
+              "type": "object",
+              "required": [
+                "order_id",
+                "status"
+              ]
+            },
+            "expected_output": {
+              "order_id": "1001",
+              "status": "shipped"
+            },
+            "usage": [
+              {
+                "actual_path": "/output/status",
+                "tool_output_path": "/status"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "golden",
+        "order"
+      ]
     },
     {
       "case_key": "order-1002",
-      "input": {"order_id": "1002"},
-      "assertions": {
-        "expected_output": {"order_id": "1002", "status": "processing"},
-        "tools": {"allowed": ["get_order"], "required": ["get_order"], "arguments": {"get_order": {"order_id": "1002"}}},
-        "trajectory": {"required_steps": ["lookup", "respond"], "dependencies": [["lookup", "respond"]]},
-        "retrieval": {"judgment_status": "complete", "relevance": {"policy-shipped": 2, "policy-refund": 0}}
+      "input": {
+        "order_id": "1002"
       },
-      "tags": ["order"]
+      "assertions": {
+        "expected_output": {
+          "order_id": "1002",
+          "status": "processing"
+        },
+        "tools": {
+          "allowed": [
+            "get_order"
+          ],
+          "required": [
+            "get_order"
+          ],
+          "arguments": {
+            "get_order": {
+              "order_id": "1002"
+            }
+          }
+        },
+        "trajectory": {
+          "required_steps": [
+            "lookup",
+            "respond"
+          ],
+          "dependencies": [
+            [
+              "lookup",
+              "respond"
+            ]
+          ]
+        },
+        "retrieval": {
+          "judgment_status": "complete",
+          "relevance": {
+            "policy-shipped": 2,
+            "policy-refund": 0
+          }
+        },
+        "tool_calls": [
+          {
+            "call_id": "order.lookup",
+            "name": "get_order",
+            "expected_arguments": {
+              "order_id": "1002"
+            },
+            "arguments_schema": {
+              "type": "object",
+              "properties": {
+                "order_id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "order_id"
+              ]
+            },
+            "result_schema": {
+              "type": "object",
+              "required": [
+                "order_id",
+                "status"
+              ]
+            },
+            "expected_output": {
+              "order_id": "1002",
+              "status": "processing"
+            },
+            "usage": [
+              {
+                "actual_path": "/output/status",
+                "tool_output_path": "/status"
+              }
+            ]
+          }
+        ]
+      },
+      "tags": [
+        "order"
+      ]
     }
   ]
 }
-

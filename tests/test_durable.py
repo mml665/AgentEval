@@ -55,7 +55,7 @@ async def test_duplicate_delivery_and_grading_are_idempotent(client, setup_run):
     await coord.drain(run["id"])
     report = client.get(f"/api/v1/evaluations/{run['id']}/report").json()
     assert report["counts"]["passed"] == 2 and report["attempts"] == 2
-    assert client.get(f"/api/v1/evaluations/{run['id']}/results?limit=100").json()["total"] == 10
+    assert client.get(f"/api/v1/evaluations/{run['id']}/results?limit=100").json()["total"] == 12
 
 
 def test_project_capacity_is_shared_across_coordinators(client, setup_run):

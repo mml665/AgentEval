@@ -113,6 +113,7 @@ class Execution(Entity):
     error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(nullable=True)
     trace_id: Mapped[str] = mapped_column(default=uid, index=True)
+    trace_completeness: Mapped[str] = mapped_column(default="unavailable", server_default="unavailable")
     late_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
@@ -196,6 +197,34 @@ class JudgeCall(Entity):
     response_hash: Mapped[str | None] = mapped_column(nullable=True)
     usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+
+
+class JudgeBudget(Entity):
+    __tablename__ = "judge_budgets"
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"), unique=True)
+    max_calls: Mapped[int]
+    policy_source: Mapped[str]
+
+
+class TraceSpan(Entity):
+    __tablename__ = "trace_spans"
+    __table_args__ = (UniqueConstraint("execution_id", "span_id"),)
+    execution_id: Mapped[str] = mapped_column(ForeignKey("case_executions.id"), index=True)
+    trace_id: Mapped[str] = mapped_column(index=True)
+    span_id: Mapped[str]
+    parent_span_id: Mapped[str | None] = mapped_column(nullable=True)
+    record: Mapped[dict] = mapped_column(JSON)
+
+
+class ServiceHeartbeat(Entity):
+    __tablename__ = "service_heartbeats"
+    instance_id: Mapped[str] = mapped_column(unique=True)
+    role: Mapped[str] = mapped_column(index=True)
+    state: Mapped[str]
+    last_seen: Mapped[float] = mapped_column(index=True)
+    last_success: Mapped[float]
+    failures: Mapped[int]
+    error_code: Mapped[str | None] = mapped_column(nullable=True)
 
 
 def make_database(url: str):

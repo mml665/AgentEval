@@ -108,3 +108,41 @@ test('mobile login, navigation, empty states and dialogs fit viewport', async ({
   await page.getByLabel('关闭弹窗').click();
   await page.screenshot({ path: '../.build/console-mobile.png', fullPage: true });
 });
+
+test('health, standalone component, trace timeline, export and pagination work through UI', async ({ page }) => {
+  await login(page);
+  await page.getByRole('link', { name: '运行健康', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '后台服务心跳' })).toBeVisible();
+  await expect(page.locator('.metric-card').filter({ hasText: '执行就绪' }).locator('strong')).toHaveText('就绪');
+  await page.getByRole('link', { name: '组件评测', exact: true }).click();
+  await page.getByRole('button', { name: '运行组件示例' }).first().click();
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  await expect(page.locator('.metric-card').filter({ hasText: '任务成功率' }).locator('strong')).toHaveText('100%');
+  await page.getByRole('button', { name: '查看证据' }).first().click();
+  await expect(page.getByRole('heading', { name: '执行链路与时间线' })).toBeVisible();
+  await expect(page.locator('.span-row')).toHaveCount(2);
+  await page.locator('.span-row').filter({ hasText: 'example.retriever' }).click();
+  await expect(page.locator('.span-detail')).toContainText('component.output');
+  await page.screenshot({ path: '../.build/console-trace.png', fullPage: true });
+  await page.getByLabel('关闭弹窗').click();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '导出报告', exact: true }).click()]);
+  expect(download.suggestedFilename()).toMatch(/\.json$/);
+  const { readFile } = await import('node:fs/promises');
+  const exported = JSON.parse(await readFile((await download.path())!, 'utf-8'));
+  expect(exported.report.success_rate).toBe(1);
+  expect(exported.content_hash).toHaveLength(64);
+  const projectId = await page.getByLabel('当前项目').inputValue();
+  for (let i = 0; i < 12; i++) {
+    const response = await page.request.post('/api/v1/agents', { headers: { Authorization: `Bearer ${token}` }, data: { project_id: projectId, name: `Paged Agent ${i}`, adapter_type: 'python' } });
+    expect(response.status()).toBe(201);
+  }
+  await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
+  await page.getByLabel('刷新数据', { exact: true }).click();
+  await expect(page.locator('.resource-card')).toHaveCount(10);
+  const firstPage = await page.locator('.resource-card h2').allTextContents();
+  await page.getByRole('button', { name: '下一页', exact: true }).click();
+  await expect(page.locator('.resource-card')).toHaveCount(4);
+  const secondPage = await page.locator('.resource-card h2').allTextContents();
+  expect(firstPage.filter(name => secondPage.includes(name))).toHaveLength(0);
+  await page.screenshot({ path: '../.build/console-paging.png', fullPage: true });
+});

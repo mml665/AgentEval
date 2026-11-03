@@ -37,7 +37,7 @@ class Named(Contract):
 
 class AgentCreate(Named):
     project_id: str
-    adapter_type: Literal["http", "python", "langgraph"]
+    adapter_type: Literal["http", "python", "langgraph", "component"]
 
 
 class AgentVersionCreate(Contract):
@@ -71,7 +71,7 @@ class BenchmarkVersionCreate(Contract):
         return self
 
 
-EvaluatorID = Literal["exact_match", "json_schema", "tool_selection", "tool_arguments", "trajectory", "rag", "llm_judge"]
+EvaluatorID = Literal["exact_match", "json_schema", "tool_selection", "tool_arguments", "tool_call", "trajectory", "rag", "llm_judge"]
 
 
 class EvaluatorSpec(Contract):
@@ -137,6 +137,13 @@ class CompareCreate(Contract):
 
 class ReleaseCapacity(Contract):
     reason: str = Field(min_length=10, max_length=2000)
+
+
+class ComponentRunCreate(Contract):
+    project_id: str
+    component_id: str
+    benchmark_version_id: str
+    profile_version_id: str
 
 
 def nearest_rank(values: list[float], quantile: float) -> float | None:

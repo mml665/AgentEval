@@ -44,7 +44,10 @@ async def test_http_agent_uses_actual_network_and_matches_python(http_fixture):
     actual = await invoke("http", {"endpoint": f"http://127.0.0.1:{port}/invoke"}, request, 3, settings)
     assert actual == order_agent(request)
     python = await invoke("python", {"plugin_id": "example.order.v1"}, request, 3, settings)
-    assert actual == python
+    assert actual["output"] == python["output"]
+    assert actual["observations"]["workflow_steps"] == python["observations"]["workflow_steps"]
+    assert python["observations"]["tool_calls"][0]["call_id"] == "order.lookup"
+    assert python["trace_spans"]
 
 
 async def test_redirect_is_not_followed(http_fixture):

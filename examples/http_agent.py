@@ -7,5 +7,13 @@ app = FastAPI()
 
 @app.post("/invoke")
 def invoke(request: dict):
-    return order_agent(request)
+    from agenteval.tracing import Recorder, event
+    recorder = Recorder()
+    with recorder.span("http.order", "agent", request["input"], request.get("traceparent")):
+        response = order_agent(request)
+        response["observations"]["tool_calls"] = recorder.calls
+        event("final.output", response["output"])
+    response["trace_spans"] = recorder.records()
+    response["trace_completeness"] = "instrumented"
+    return response
 

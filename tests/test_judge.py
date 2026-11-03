@@ -85,3 +85,24 @@ def test_missing_judge_config_is_rejected_before_dispatch(client, setup_run):
         assert response.status_code == 422
         assert response.json()["detail"]["code"] == "JUDGE_NOT_CONFIGURED"
         assert unconfigured.get("/api/v1/evaluations").json()["total"] == 0
+
+
+async def test_run_budget_survives_worker_environment_change(client, setup_run, judge_server):
+    from agenteval.durable import Coordinator
+    s = setup_run
+    profile = s["post"]("profile-versions", {"project_id": s["project"]["id"], "name": "Frozen budget", "version": "1",
+        "evaluators": [{"instance_id": "judge", "id": "llm_judge", "config": {"rubric": "Check correctness."}}]})
+    url = "sqlite:///" + client.app.state.engine.url.database
+    config = Settings(database_url=url, api_token=TOKEN, execution_mode="celery", judge_max_calls=2,
+                      judge_endpoint=judge_server["endpoint"], judge_model="fixture-model", judge_api_key="")
+    app = create_app(config)
+    with TestClient(app, headers={"Authorization": f"Bearer {TOKEN}"}) as queued:
+        run = queued.post("/api/v1/evaluations", json={**s["body"], "profile_version_id": profile["id"]}).json()
+        assert run["manifest"]["judge"]["max_calls"] == 2
+        changed = Settings(database_url=url, api_token=TOKEN, execution_mode="celery", judge_max_calls=1,
+                           judge_endpoint=judge_server["endpoint"], judge_model="changed-environment-model", judge_api_key="")
+        await Coordinator(app.state.sessions, changed).drain(run["id"])
+        budget = queued.get(f"/api/v1/evaluations/{run['id']}/judge-budget").json()
+        assert budget["max_calls"] == budget["reserved_calls"] == 2
+        assert queued.get(f"/api/v1/evaluations/{run['id']}/report").json()["success_rate"] == 1
+        assert all(r["model"] == "fixture-model" for r in judge_server["requests"])

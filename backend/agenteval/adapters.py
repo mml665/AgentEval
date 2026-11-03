@@ -13,15 +13,20 @@ MAX_OUTPUT_BYTES = 1_048_576
 
 
 class AgentFailure(Exception):
-    pass
+    def __init__(self, message, response=None):
+        super().__init__(message)
+        self.response = response
 
 
 def validate_agent_config(adapter_type, configuration, settings):
-    if adapter_type in ("python", "langgraph"):
+    if adapter_type in ("python", "langgraph", "component"):
         registry = PLUGINS
         if adapter_type == "langgraph":
             # Do not import the framework in every API / ordinary Python process.
             registry = GRAPH_PLUGINS
+        if adapter_type == "component":
+            from agenteval.components import COMPONENTS
+            registry = COMPONENTS
         if set(configuration) != {"plugin_id"} or configuration["plugin_id"] not in registry:
             raise ValueError("Only deployment-registered plugin_id values are supported")
     else:
@@ -50,15 +55,28 @@ async def bounded_read(stream):
     return bytes(data)
 
 
-async def invoke(adapter_type, configuration, request, timeout, settings):
+async def invoke(adapter_type, configuration, request, timeout, settings, trace_buffer=None):
     validate_agent_config(adapter_type, configuration, settings)
-    if adapter_type in ("python", "langgraph"):
+    if adapter_type in ("python", "langgraph", "component"):
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "agenteval.plugin_host",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+            stderr=asyncio.subprocess.PIPE, limit=262144,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "AGENTEVAL_STREAM_TRACE": "1"},
         )
+        async def collect():
+            try:
+                while line := await process.stderr.readline():
+                    if trace_buffer is not None and len(trace_buffer) <= 1000:
+                        try:
+                            row = json.loads(line).get("agenteval_span")
+                            if isinstance(row, dict) and "span_id" in row:
+                                trace_buffer[row["span_id"]] = row
+                        except (ValueError, AttributeError):
+                            pass
+            except (ValueError, OSError):
+                pass
+        collecting = asyncio.create_task(collect())
         try:
             async with asyncio.timeout(timeout):
                 process.stdin.write(json.dumps({"adapter_type": adapter_type, "plugin_id": configuration["plugin_id"], "request": request}).encode())
@@ -72,6 +90,10 @@ async def invoke(adapter_type, configuration, request, timeout, settings):
             if process.returncode is None:
                 process.kill()
                 await process.wait()
+            try:
+                await asyncio.wait_for(collecting, .5)
+            except TimeoutError:
+                collecting.cancel()
     else:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
             async with client.stream("POST", configuration["endpoint"], json=request) as response:
@@ -89,6 +111,8 @@ async def invoke(adapter_type, configuration, request, timeout, settings):
             raise ValueError("Missing output")
         # Reject NaN/Infinity even if the remote serializer accepts them.
         json.dumps(response, allow_nan=False)
+        if response.get("status") == "agent_failed":
+            raise AgentFailure("Trusted plugin failed", response)
         return response
     except (ValueError, TypeError, UnicodeError) as exc:
         raise AgentFailure("Agent returned an invalid JSON result") from exc

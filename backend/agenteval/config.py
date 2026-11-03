@@ -1,4 +1,6 @@
 import os
+import math
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 
 
@@ -18,8 +20,12 @@ class Settings:
     judge_max_calls: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_MAX_CALLS", "100")))
 
     def __post_init__(self):
-        if self.execution_mode not in ("local", "celery") or self.lease_seconds < 1 or self.project_concurrency < 1:
+        if self.execution_mode not in ("local", "celery") or not math.isfinite(self.lease_seconds) or self.lease_seconds < 1 or self.project_concurrency < 1 or self.judge_max_calls < 1:
             raise ValueError("Invalid execution mode, lease or concurrency configuration")
+        if self.judge_endpoint:
+            endpoint = urlsplit(self.judge_endpoint)
+            if endpoint.scheme not in ("http", "https") or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
+                raise ValueError("Judge endpoint must be HTTP(S), without inline credentials, query or fragment")
     http_allowlist: tuple[str, ...] = field(default_factory=lambda: tuple(
         x.strip().lower() for x in os.getenv(
             "AGENTEVAL_HTTP_ALLOWLIST", "127.0.0.1:9001,localhost:9001").split(",") if x.strip()))

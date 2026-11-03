@@ -8,7 +8,7 @@ from agenteval.contracts import EvaluatorSpec, canonical, pointer
 
 CAPABILITIES = {
     "exact_match": None, "json_schema": None, "tool_selection": "tool_calls",
-    "tool_arguments": "tool_calls", "trajectory": "workflow_steps", "rag": "retrieval_results", "llm_judge": None,
+    "tool_arguments": "tool_calls", "tool_call": "tool_calls", "trajectory": "workflow_steps", "rag": "retrieval_results", "llm_judge": None,
 }
 
 
@@ -16,11 +16,13 @@ def validate_config(spec):
     allowed = {
         "exact_match": {"actual_path", "expected_path"},
         "json_schema": {"actual_path", "schema"},
-        "tool_selection": {"forbidden"}, "tool_arguments": set(),
+        "tool_selection": {"forbidden"}, "tool_arguments": set(), "tool_call": {"allow_extra_calls"},
         "trajectory": set(), "rag": {"metric", "k"}, "llm_judge": {"rubric", "timeout_seconds"},
     }[spec.id]
     if set(spec.config) - allowed:
         raise ValueError(f"Unknown configuration keys for {spec.id}")
+    if spec.id == "tool_call" and type(spec.config.get("allow_extra_calls", False)) is not bool:
+        raise ValueError("allow_extra_calls must be boolean")
     if spec.id == "llm_judge":
         rubric = spec.config.get("rubric")
         if not isinstance(rubric, str) or not 1 <= len(rubric) <= 4000:
@@ -77,6 +79,9 @@ def validate_case(spec: EvaluatorSpec, case: dict):
             raise ValueError("Non-empty tools.arguments is required")
         elif any(not isinstance(v, dict) for v in tools["arguments"].values()):
             raise ValueError("Expected tool arguments must be objects")
+    elif spec.id == "tool_call":
+        from agenteval.tool_scoring import validate_assertions
+        validate_assertions(assertions["tool_calls"])
     elif spec.id == "trajectory":
         definition = assertions["trajectory"]
         required = definition["required_steps"]
@@ -144,6 +149,10 @@ def _evaluate(spec, case, response):
         actual = pointer(response, spec.config.get("actual_path", "/output"))
         errors = [e.message for e in Draft202012Validator(spec.config["schema"]).iter_errors(actual)]
         return result(spec, "scored", float(not errors), {"errors": errors[:20]})
+    if spec.id == "tool_call":
+        from agenteval.tool_scoring import score_calls
+        status, score, evidence = score_calls(assertions["tool_calls"], actual, response, spec.config.get("allow_extra_calls", False))
+        return result(spec, status, score, evidence)
     if spec.id == "tool_selection":
         names = [x["name"] for x in actual]
         definition = assertions["tools"]

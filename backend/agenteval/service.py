@@ -30,7 +30,7 @@ def snapshot(session, run, settings=None):
         "profile": profile.definition, "profile_hash": profile.content_hash,
         "environment": {"python": sys.version.split()[0], "platform": platform.system()},
         "reproducibility": "limited", "execution_mode": settings.execution_mode,
-        "judge": {"endpoint": settings.judge_endpoint, "model": settings.judge_model, "prompt_version": "judge-1.0"},
+        "judge": {"endpoint": settings.judge_endpoint, "model": settings.judge_model, "prompt_version": "judge-1.0", "max_calls": settings.judge_max_calls},
     }
 
 
@@ -42,7 +42,9 @@ def report(session, batch):
     assessments = records(session, TrialAssessment, batch_id=batch.id)
     results = records(session, EvaluationResult, batch_id=batch.id)
     trials = records(session, Trial, run_id=run.id)
-    all_executions = [e for t in trials for e in records(session, Execution, trial_id=t.id)]
+    all_executions = list(session.scalars(select(Execution).join(Trial, Execution.trial_id == Trial.id).where(Trial.run_id == run.id)))
+    trial_map = {t.id: t for t in trials}
+    case_map = {c.id: c for c in session.scalars(select(TestCase).where(TestCase.benchmark_version_id == run.benchmark_version_id))}
     by_execution = {e.id: e for e in all_executions}
     executions = [by_execution[a.selected_execution_id] for a in assessments]
     counts = Counter(a.verdict for a in assessments)
@@ -50,8 +52,8 @@ def report(session, batch):
     n = len(trials)
     rows = []
     for assessment in assessments:
-        trial = session.get(Trial, assessment.trial_id)
-        case = session.get(TestCase, trial.case_id)
+        trial = trial_map[assessment.trial_id]
+        case = case_map[trial.case_id]
         rows.append({"trial_id": trial.id, "case_key": case.case_key,
                      "repetition_index": trial.repetition_index, "verdict": assessment.verdict,
                      "reasons": assessment.reasons, "execution_id": assessment.selected_execution_id,
