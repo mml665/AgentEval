@@ -1,0 +1,14 @@
+.venv/
+.uv-cache/
+__pycache__/
+.pytest_cache/
+*.egg-info/
+*.pyc
+.env
+.build/
+data/
+node_modules/
+frontend/dist/
+*.db
+*.db-shm
+*.db-wal
