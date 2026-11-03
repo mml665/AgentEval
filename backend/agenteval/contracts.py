@@ -25,8 +25,18 @@ def pointer(value: Any, path: str) -> Any:
     if not path.startswith("/"):
         raise ValueError("Path must be an RFC 6901 JSON Pointer")
     for token in path[1:].split("/"):
+        # RFC 6901 permits only ~0 and ~1 escapes; reject malformed pointers.
+        import re
+        if re.search(r"~(?![01])", token):
+            raise ValueError("Invalid JSON Pointer escape")
         key = token.replace("~1", "/").replace("~0", "~")
-        value = value[int(key)] if isinstance(value, list) else value[key]
+        if isinstance(value, list):
+            # JSON array indices are non-negative canonical decimal strings.
+            if not re.fullmatch(r"0|[1-9][0-9]*", key):
+                raise ValueError("Invalid JSON Pointer array index")
+            value = value[int(key)]
+        else:
+            value = value[key]
     return value
 
 
