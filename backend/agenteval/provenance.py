@@ -6,5 +6,7 @@ def describe(response, environment=None):
     return {"schema_version": "1", "output": {"source": "agent_self_report", "independent": False},
         "observations": {key: {"source": "agent_self_report", "independent": False} for key in observations},
         "trace": {"source": "execution_wrapper_and_agent_instrumentation", "independent_business_state": False},
-        "environment": {"source": "platform_environment_adapter", "independent": True,
+        "environment": {"source": "platform_environment_adapter",
+                        "independent": bool(environment and environment.get("status") == "observed"
+                                            and isinstance(environment.get("state_hash"), str)),
                         "status": (environment or {}).get("status", "unavailable")}}
