@@ -33,6 +33,9 @@ def test_complete_regression_and_historical_regrading(client, setup_run):
     assert comparison["report"]["new_failures"] == ["order-1001"]
     assert comparison["report"]["success_rate_delta"] == -.5
     assert comparison["report"]["gate"]["status"] == "failed"
+    listing = client.get("/api/v1/regressions").json()
+    assert listing["total"] == 1
+    assert listing["items"][0]["id"] == comparison["id"]
     bad = client.get(f"/api/v1/evaluations/{candidate['id']}/bad-cases").json()
     assert len(bad["items"]) == 1
     execution = client.get(f"/api/v1/executions/{bad['items'][0]['execution_id']}").json()
@@ -100,6 +103,17 @@ def test_strict_comparison_rejects_profile_difference(client, setup_run):
 def test_nonexistent_resource_and_pagination_bounds(client):
     assert client.get("/api/v1/evaluations/missing").status_code == 404
     assert client.get("/api/v1/projects?limit=10000").status_code == 422
+
+
+def test_project_filters_and_list_totals(client, setup_run):
+    s = setup_run
+    other = s["post"]("projects", {"name": "Other project"})
+    for resource in ("agents", "benchmarks", "profile-versions"):
+        own = client.get(f"/api/v1/{resource}", params={"project_id": s["project"]["id"]}).json()
+        assert own["total"] == len(own["items"]) == 1
+        empty = client.get(f"/api/v1/{resource}", params={"project_id": other["id"]}).json()
+        assert empty["total"] == 0 and empty["items"] == []
+    assert client.get("/api/v1/unknown").status_code == 404
 
 
 def test_deny_arbitrary_plugin_and_http_credentials(client, setup_run):

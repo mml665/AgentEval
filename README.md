@@ -2,7 +2,7 @@
 
 面向异构 Agent 的自动化评测与回归分析平台。
 
-**当前版本：0.1.0 / M1 核心闭环。** 已实现可运行的 API、版本化数据、HTTP/Python 执行、四粒度代表性规则评分、独立评分批次和基础回归门禁。完整 MVP 仍在构建，当前不包含 Web、Celery/Redis、LangGraph 或 LLM Judge。
+**当前版本：0.2.0 / M1 核心闭环 + Web 工作台。** 已实现 React/TypeScript 前端、可运行的 API、版本化数据、HTTP/Python 执行、四粒度代表性规则评分、独立评分批次和基础回归门禁。完整 MVP 仍在构建，当前不包含 Celery/Redis、LangGraph 或 LLM Judge。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -37,6 +37,41 @@ export AGENTEVAL_API_TOKEN='replace-with-your-random-token-at-least-16-character
 API 默认监听 `127.0.0.1:8000`。除了 `/health`，业务接口均需 `Authorization: Bearer <token>`。受保护的 OpenAPI 文档位于 `/api/v1/openapi.json`；本轮未提供 Swagger 页面。`.env.example` 是配置参考，本地命令不自动加载 `.env`，应使用环境变量。
 
 必须以**单 API 进程**运行。首次启动前执行迁移；应用启动不会隐式建表。数据库文件位于 `data/agenteval.db`，不会进入 Git。
+
+## 前端页面
+
+首次构建前端需要 Node.js 20.19+ 或 22.12+（本地验证为 Node 24）：
+
+```bash
+cd frontend
+npm ci
+npm run build
+cd ..
+```
+
+构建后重启 API，打开 [http://127.0.0.1:8000](http://127.0.0.1:8000)。前端由同一个 FastAPI 服务提供，无需另起静态服务器；没有构建产物时，API 仍可独立工作，但根路径没有页面。
+
+Windows 已安装依赖并完成前端构建后，也可直接在仓库根目录执行：
+
+```powershell
+.\scripts\start-local.ps1
+```
+
+脚本初始化数据库并启动服务；未设置环境变量时，仅从本机 `.env` 读取访问令牌；不存在有效令牌时生成随机令牌并保存。它不加载 `.env` 中其他配置。登录时使用 `AGENTEVAL_API_TOKEN` 的值，令牌不会保存到浏览器存储。
+
+页面包括：评测概览、Agent 注册和版本发布、Benchmark JSON/JSONL 导入、评分方案、任务创建和轮询、评分批次选择、执行证据、回归比较与门禁。空项目显示配置引导，可点击“创建演示项目”生成真实持久化示例并执行两次评测。
+
+前端开发时保持 API 在 8000 端口运行，在 `frontend` 目录执行 `npm run dev`，访问终端显示的 Vite 地址。开发服务器通过同源代理访问 API；不同 API 地址可通过 `AGENTEVAL_DEV_API` 配置。
+
+浏览器验收在前端构建后执行：
+
+```bash
+cd frontend
+npx playwright install chromium
+npm run test:e2e
+```
+
+测试自动启动使用独立临时数据库的 API，不影响正常数据。Windows 默认使用本机 Chrome；其他系统使用 Playwright Chromium。覆盖错误令牌、演示全流程、手动资源配置、重评与历史批次、回归证据和移动端布局。
 
 ## 执行版本回归示例
 
@@ -99,7 +134,7 @@ $env:PYTHONPATH = 'backend'
 
 ## Docker Compose
 
-已提供 API + PostgreSQL 配置。复制 `.env.example` 为 `.env`，修改 API token 和数据库密码，再执行：
+已提供前端多阶段构建 + API + PostgreSQL 配置。复制 `.env.example` 为 `.env`，修改 API token 和数据库密码，再执行：
 
 ```bash
 docker compose up --build
@@ -107,7 +142,7 @@ docker compose up --build
 
 数据库密码使用 URL 安全随机字符，避免连接 URL 转义问题。API 仅映射到本机；数据库不暴露宿主端口。Compose 不包含尚未实现的 Worker/Redis。
 
-本轮仅验证 Compose 配置解析，容器构建与运行尚未在本机验证。PostgreSQL 迁移校验交由仓库 CI 执行，其实际状态应以 Actions 结果为准。
+本机仅验证 Compose 配置解析，容器构建与运行尚未验证。PostgreSQL 迁移和前后端校验交由仓库 CI 执行，其实际状态应以 Actions 结果为准。
 
 ## 当前使用边界
 

@@ -1,10 +1,12 @@
 import secrets
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
-from sqlalchemy import select
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from agenteval import __version__
@@ -87,7 +89,8 @@ def create_app(settings=None):
     def page(session, model, offset, limit, **filters):
         query = select(model).filter_by(**filters).order_by(model.created_at.desc(), model.id)
         return {"items": [serialize(x) for x in session.scalars(query.offset(offset).limit(limit))],
-                "offset": offset, "limit": limit}
+                "offset": offset, "limit": limit,
+                "total": session.scalar(select(func.count()).select_from(model).filter_by(**filters))}
 
     def add(session, entity):
         session.add(entity)
@@ -126,8 +129,8 @@ def create_app(settings=None):
         return add(session, Agent(**body.model_dump()))
 
     @router.get("/agents")
-    def agents(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, Agent, offset, limit)
+    def agents(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
+        return page(session, Agent, offset, limit, **({"project_id": project_id} if project_id else {}))
 
     @router.post("/agents/{agent_id}/versions", status_code=201)
     def create_agent_version(agent_id: str, body: AgentVersionCreate, session=Depends(database)):
@@ -149,8 +152,8 @@ def create_app(settings=None):
         return add(session, Benchmark(**body.model_dump()))
 
     @router.get("/benchmarks")
-    def benchmarks(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, Benchmark, offset, limit)
+    def benchmarks(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
+        return page(session, Benchmark, offset, limit, **({"project_id": project_id} if project_id else {}))
 
     @router.post("/benchmarks/{benchmark_id}/versions", status_code=201)
     def create_benchmark_version(benchmark_id: str, body: BenchmarkVersionCreate, session=Depends(database)):
@@ -183,8 +186,8 @@ def create_app(settings=None):
                                           definition=definition, content_hash=digest(definition)))
 
     @router.get("/profile-versions")
-    def profiles(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, ProfileVersion, offset, limit)
+    def profiles(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
+        return page(session, ProfileVersion, offset, limit, **({"project_id": project_id} if project_id else {}))
 
     @router.post("/evaluations", status_code=202)
     def create_run(body: RunCreate, tasks: BackgroundTasks,
@@ -243,8 +246,8 @@ def create_app(settings=None):
         return {**serialize(run), "grading_batch_id": batch.id}
 
     @router.get("/evaluations")
-    def runs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, Run, offset, limit)
+    def runs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
+        return page(session, Run, offset, limit, **({"project_id": project_id} if project_id else {}))
 
     @router.get("/evaluations/{run_id}")
     def run_detail(run_id: str, session=Depends(database)):
@@ -336,7 +339,21 @@ def create_app(settings=None):
     def comparison_detail(comparison_id: str, session=Depends(database)):
         return serialize(get(session, Comparison, comparison_id))
 
+    @router.get("/regressions")
+    def comparisons(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
+        return page(session, Comparison, offset, limit)
+
     app.include_router(router)
+    # Hash routes stay in the browser, so API 404s never fall back to index.html.
+    # Public static files contain no credentials or business data.
+    frontend = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    if (frontend / "index.html").is_file():
+        app.mount("/assets", StaticFiles(directory=frontend / "assets"), name="assets")
+
+        @app.get("/", include_in_schema=False)
+        def web_index():
+            return FileResponse(frontend / "index.html")
+
     return app
 
 

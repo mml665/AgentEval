@@ -1,0 +1,107 @@
+import { test, expect, type Page } from '@playwright/test';
+
+const token = 'local-browser-test-token-only';
+async function login(page: Page) {
+  await page.goto('/');
+  await page.getByLabel('访问令牌', { exact: true }).fill(token);
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByRole('navigation', { name: '主导航' })).toBeAttached();
+}
+
+test('login rejects invalid token, then completes real evaluation, evidence and regression flow', async ({ page }) => {
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto('/');
+  await page.getByLabel('访问令牌', { exact: true }).fill('invalid-token-long-enough');
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByRole('alert')).toContainText('访问令牌无效');
+  await page.getByLabel('访问令牌', { exact: true }).fill(token);
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByRole('heading', { name: /从一个项目开始/ })).toBeVisible();
+  await page.getByRole('button', { name: '创建演示项目', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '评测概览', exact: true })).toBeVisible({ timeout: 45000 });
+  await expect(page.locator('.metric-card').filter({ hasText: '评测任务' }).locator('strong')).toHaveText('2');
+  await expect(page.locator('.metric-card').filter({ hasText: '最近任务成功率' }).locator('strong')).toHaveText('50%');
+  await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Order Assistant', exact: true })).toBeVisible();
+  await expect(page.locator('.version-item')).toHaveCount(2);
+  await page.getByRole('link', { name: 'Benchmark', exact: true }).click();
+  await page.getByRole('button', { name: /v1.0.*2 条用例/ }).click();
+  await expect(page.getByRole('dialog')).toContainText('order-1001');
+  await page.getByLabel('关闭弹窗').click();
+  await page.getByRole('link', { name: '评测任务', exact: false }).click();
+  await page.getByRole('button', { name: 'Order Assistant · v2.0', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  await page.getByLabel('用例结果筛选').selectOption('bad');
+  await expect(page.locator('tbody tr')).toHaveCount(1);
+  await page.getByRole('button', { name: '查看证据' }).click();
+  await expect(page.getByRole('dialog')).toContainText('get_order');
+  await expect(page.getByRole('dialog')).toContainText('processing');
+  await page.getByLabel('关闭弹窗').click();
+  await page.getByRole('button', { name: '重新评分' }).click();
+  await expect(page.getByLabel('评分批次').locator('option')).toHaveCount(2);
+  await page.getByRole('link', { name: '版本回归', exact: true }).click();
+  await page.getByRole('button', { name: /^CMP-/ }).click();
+  await expect(page.getByRole('heading', { name: '未通过质量门禁' })).toBeVisible();
+  await expect(page.locator('.change-card').filter({ hasText: '新增失败' })).toContainText('order-1001');
+  await page.screenshot({ path: '../.build/console-regression.png', fullPage: true });
+  await page.getByRole('link', { name: '评测概览', exact: true }).click();
+  await page.screenshot({ path: '../.build/console-overview.png', fullPage: true });
+  const stored = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
+  expect(stored).not.toContain(token);
+  expect(errors).toEqual([]);
+});
+
+test('manual configuration publishes agent, benchmark, profile and runs from UI', async ({ page }) => {
+  await login(page);
+  await page.getByRole('button', { name: '新建项目', exact: true }).first().click();
+  const modal = page.getByRole('dialog');
+  await modal.getByLabel('项目名称').fill('手动配置项目');
+  await modal.getByRole('button', { name: '创建项目' }).click();
+  await expect(modal).not.toBeVisible();
+  await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
+  await page.getByRole('button', { name: '注册 Agent', exact: true }).click();
+  await modal.getByLabel('Agent 名称').fill('手动 Order Agent');
+  await modal.getByRole('button', { name: '注册 Agent' }).click();
+  await page.getByRole('button', { name: '发布版本', exact: true }).click();
+  await modal.getByLabel('版本号').fill('1.0');
+  await modal.getByLabel('工具调用与参数').check();
+  await modal.getByLabel('工作流步骤').check();
+  await modal.getByLabel('检索结果排序').check();
+  await modal.getByRole('button', { name: '发布不可变版本' }).click();
+  await expect(modal).not.toBeVisible();
+  await page.getByRole('link', { name: 'Benchmark', exact: true }).click();
+  await page.getByRole('button', { name: '创建数据集' }).click();
+  await modal.getByLabel('数据集名称').fill('手动订单用例');
+  await modal.getByRole('button', { name: '创建数据集' }).click();
+  await page.getByRole('button', { name: '导入新版本' }).click();
+  await modal.getByLabel('版本号').fill('1.0');
+  await modal.getByRole('button', { name: '填入示例用例' }).click();
+  await expect(modal).toContainText('已解析 2 条用例');
+  await modal.getByRole('button', { name: '校验并发布版本' }).click();
+  await expect(modal).not.toBeVisible();
+  await page.getByRole('link', { name: '评分方案', exact: true }).click();
+  await page.getByRole('button', { name: '创建方案' }).click();
+  await modal.getByLabel('方案名称').fill('手动四粒度评分');
+  await modal.getByRole('button', { name: '使用四粒度示例' }).click();
+  await modal.getByRole('button', { name: '发布评分方案' }).click();
+  await expect(modal).not.toBeVisible();
+  await page.getByRole('link', { name: '评测任务', exact: false }).click();
+  await page.getByRole('button', { name: '创建评测' }).click();
+  await modal.getByRole('button', { name: '开始评测' }).click();
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  await expect(page.locator('.metric-card').filter({ hasText: '任务成功率' }).locator('strong')).toHaveText('100%');
+});
+
+test('mobile login, navigation, empty states and dialogs fit viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.getByLabel('打开导航').click();
+  await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Agent 管理' })).toBeVisible();
+  await page.getByRole('button', { name: '注册 Agent', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBeTruthy();
+  await page.getByLabel('关闭弹窗').click();
+  await page.screenshot({ path: '../.build/console-mobile.png', fullPage: true });
+});

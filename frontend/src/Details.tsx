@@ -1,0 +1,63 @@
+import { useEffect, useState } from 'react';
+import type { API } from './api';
+import type { Comparison, Execution, Report, Run, Score } from './types';
+import type { Workspace } from './workspace';
+import { agentName, benchmarkName } from './workspace';
+import { Badge, Code, date, Empty, ErrorBox, Heading, Icon, Metric, Modal, pct, short } from './ui';
+
+function Back({ to, children }: { to: string; children: string }) { return <a className="back-link" href={`#${to}`}><span>←</span>{children}</a>; }
+
+export function RunDetail({ api, id, data, changed }: { api: API; id: string; data: Workspace; changed: () => Promise<void> }) {
+  const [run, setRun] = useState<Run | null>(null), [report, setReport] = useState<Report | null>(null), [scores, setScores] = useState<Score[]>([]);
+  const [batch, setBatch] = useState(''), [revision, setRevision] = useState(0), [error, setError] = useState('');
+  const [filter, setFilter] = useState('all'), [busy, setBusy] = useState(false);
+  const [execution, setExecution] = useState<Execution | null>(null), [loadingExecution, setLoadingExecution] = useState(false);
+  useEffect(() => {
+    let alive = true, timer: ReturnType<typeof setTimeout> | undefined;
+    async function load() {
+      try {
+        const current = await api.get<Run>(`evaluations/${id}`);
+        const selected = batch || [...(current.grading_batches || [])].sort((a, b) => b.revision - a.revision)[0]?.id;
+        if (!selected) throw new Error('该任务还没有评分批次。');
+        const [r, s] = await Promise.all([api.get<Report>(`evaluations/${id}/report?grading_batch_id=${selected}`), api.all<Score>(`evaluations/${id}/results?grading_batch_id=${selected}`)]);
+        if (!alive) return;
+        setRun(current); setReport(r); setScores(s); setError('');
+        if (!batch) setBatch(selected);
+        if (!['completed', 'failed', 'cancelled'].includes(current.status) || ['pending', 'running'].includes(r.grading_status)) timer = setTimeout(() => void load(), 1500);
+      } catch (e) { if (alive) setError((e as Error).message); }
+    }
+    void load(); return () => { alive = false; clearTimeout(timer); };
+  }, [api, id, batch, revision]);
+
+  async function mutate(kind: 'regrade' | 'cancel') {
+    setBusy(true); setError('');
+    try {
+      const response = await api.post<{ id?: string }>(`evaluations/${id}/${kind}`);
+      if (kind === 'regrade' && response.id) setBatch(response.id);
+      setRevision(r => r + 1); await changed();
+    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
+  async function inspect(executionId: string) {
+    setLoadingExecution(true); setError('');
+    try { setExecution(await api.get<Execution>(`executions/${executionId}`)); }
+    catch (e) { setError((e as Error).message); } finally { setLoadingExecution(false); }
+  }
+  const settled = run && ['completed', 'failed', 'cancelled'].includes(run.status);
+  const gradingActive = run?.grading_batches?.some(b => ['pending', 'running'].includes(b.status));
+  const trials = report?.trials.filter(t => filter === 'all' || t.verdict !== 'passed') || [];
+  return <><Back to="/runs">全部评测任务</Back><Heading eyebrow={`RUN-${short(id)}`} title={run ? agentName(data, run.agent_version_id) : '评测详情'} description={run ? `${benchmarkName(data, run.benchmark_version_id)} · ${date(run.created_at)}` : '正在读取任务与评分证据…'} action={<div className="button-group">{run && <Badge status={run.status}/>}<button className="button secondary" onClick={() => setRevision(r => r + 1)} aria-label="刷新任务"><Icon name="refresh"/></button>{settled ? <button className="button primary" disabled={busy || Boolean(gradingActive) || run?.status === 'failed'} onClick={() => void mutate('regrade')}><Icon name="refresh" size={16}/>重新评分</button> : <button className="button secondary" disabled={busy} onClick={() => void mutate('cancel')}>取消任务</button>}</div>}/><ErrorBox message={error}/>{!report ? <div className="panel"><Empty title={error ? '暂时无法读取任务' : '正在加载评测结果'} description={error ? '请检查任务是否存在，或稍后刷新。' : '执行状态和评分证据将自动更新。'}/></div> : <><div className="batch-strip"><div><Icon name="lock"/><span>固定评分批次</span><select aria-label="评分批次" value={batch} onChange={e => setBatch(e.target.value)}>{run?.grading_batches?.map(b => <option key={b.id} value={b.id}>第 {b.revision + 1} 批 · {short(b.id)}</option>)}</select><Badge status={report.grading_status}/></div><span className="mono">{short(report.grading_batch_id)}</span></div><div className="metrics-grid"><Metric label="任务成功率" value={pct(report.success_rate)} hint={`${report.counts.passed} 通过 / ${report.counts.passed + report.counts.failed} 已判定`} icon="activity"/><Metric label="判定覆盖率" value={pct(report.decision_coverage)} hint={`${report.planned_trials} 次计划试验`} icon="check"/><Metric label="评分覆盖率" value={pct(report.scoring_coverage)} hint="有效评分 / 应评分项" icon="sliders"/><Metric label="调用 P95" value={report.latency_ms.p95 == null ? '—' : <>{Math.round(report.latency_ms.p95)}<em>ms</em></>} hint={`${report.latency_ms.samples} 次成功调用`} icon="clock"/></div><section className="panel"><div className="panel-heading"><div><h2>用例执行结果</h2><p>从任务判定下钻到执行输出与评分证据</p></div><select aria-label="用例结果筛选" value={filter} onChange={e => setFilter(e.target.value)}><option value="all">全部结果</option><option value="bad">仅失败 / 待判定</option></select></div><div className="outcome-strip">{[['passed', '通过'], ['failed', '失败'], ['unknown', '待判定'], ['excluded', '排除']].map(([key, label]) => <span key={key}><i className={`outcome-dot ${key}`}/>{label}<strong>{report.counts[key]}</strong></span>)}</div>{trials.length ? <div className="table-scroll"><table><thead><tr><th>用例</th><th>重复试验</th><th>执行状态</th><th>任务判定</th><th>判定依据</th><th/></tr></thead><tbody>{trials.map(t => <tr key={t.trial_id}><td className="mono">{t.case_key}</td><td className="muted">#{t.repetition_index + 1}</td><td><Badge status={t.execution_status}/></td><td><Badge status={t.verdict}/></td><td><span className="tag-list">{t.reasons.length ? t.reasons.map(reason => <span className="tag" key={reason}>{reason}</span>) : <span className="muted">全部必需项通过</span>}</span></td><td><button className="text-button" disabled={loadingExecution} onClick={() => void inspect(t.execution_id)}>查看证据<Icon name="chevron" size={14}/></button></td></tr>)}</tbody></table></div> : <Empty title={report.grading_status === 'completed' ? '没有匹配的结果' : '评分尚未完成'} description="任务与评分进度将自动更新。"/>}</section><div className="callout subtle"><Icon name="lock"/><span>配置摘要 <code>{run?.manifest_hash.slice(0, 20)}</code> · 历史批次不会被重新评分覆盖。当前执行模式为单进程本地协调。</span></div></>}{execution && <Modal title={`执行证据 · ${short(execution.id)}`} wide onClose={() => setExecution(null)}><div className="form-body evidence"><div className="evidence-meta"><Badge status={execution.status}/><span>{execution.latency_ms == null ? '耗时未知' : `${Math.round(execution.latency_ms)} ms`}</span><code>TRACE {short(execution.trace_id)}</code></div><h3>最终输出</h3><Code value={execution.response?.output ?? execution.error ?? '没有可用输出'}/><h3>评分证据</h3>{scores.filter(s => s.execution_id === execution.id).map(s => <section className="score-evidence" key={s.id}><div><strong>{s.instance_id}</strong><span className="muted">{s.result.evaluator_id}</span><Badge status={s.result.grading_status === 'scored' ? s.result.passed ? 'passed' : 'failed' : s.result.grading_status}/>{s.result.score != null && <span className="mono">{s.result.score.toFixed(3)}</span>}</div>{s.result.explanation && <p>{s.result.explanation}</p>}<Code value={s.result.evidence}/></section>)}<h3>过程观测</h3><p className="muted">当前展示工具、步骤和检索观测通道；完整 OTel 链路树待后续实现。</p><Code value={execution.response?.observations ?? {}}/></div></Modal>}</>;
+}
+
+const gateReasons: Record<string, string> = {
+  HARD_CONSTRAINT_OR_CORE_CASE_FAILURE: '检测到硬约束违规或核心用例失败。',
+  SUCCESS_RATE_THRESHOLD: '成功率或允许下降幅度未达到方案阈值。',
+  INCOMPLETE_OR_VARIABLE_EVIDENCE: '判定覆盖率不足，或存在未知结果与试验波动。',
+  EXPLORATORY_OR_INCOMPATIBLE: '探索模式或比较条件不一致，不生成发布通过结论。',
+};
+
+export function ComparisonDetail({ api, id }: { api: API; id: string }) {
+  const [comparison, setComparison] = useState<Comparison | null>(null), [error, setError] = useState('');
+  useEffect(() => { let alive = true; void api.get<Comparison>(`regressions/${id}`).then(c => { if (alive) setComparison(c); }).catch(e => { if (alive) setError((e as Error).message); }); return () => { alive = false; }; }, [api, id]);
+  const r = comparison?.report;
+  return <><Back to="/regressions">全部回归报告</Back><Heading eyebrow={`CMP-${short(id)}`} title="版本回归报告" description="固定数据集与评分批次，保留每一项结论的依据。"/><ErrorBox message={error}/>{!r ? <section className="panel"><Empty title={error ? '无法读取报告' : '正在加载回归报告'}/></section> : <><section className={`gate-banner gate-${r.gate.status}`}><span className="gate-icon"><Icon name={r.gate.status === 'passed' ? 'check' : 'compare'} size={26}/></span><div><span className="eyebrow">QUALITY GATE</span><h2>{r.gate.status === 'passed' ? '质量门禁通过' : r.gate.status === 'failed' ? '未通过质量门禁' : '当前证据不足以判断'}</h2><p>{r.gate.reasons.length ? r.gate.reasons.map(reason => gateReasons[reason] || reason).join(' ') : '当前结果满足所有适用门禁条件。'}</p></div><Badge status={r.gate.status}/></section><div className="comparison-metrics"><div className="panel compare-number"><span>基线成功率</span><strong>{pct(r.baseline.success_rate)}</strong><small>覆盖率 {pct(r.baseline.decision_coverage)}</small><a href={`#/runs/${r.baseline.run_id}`}>查看基线<Icon name="arrow" size={14}/></a></div><span className="comparison-arrow"><Icon name="compare" size={27}/></span><div className="panel compare-number"><span>候选成功率</span><strong>{pct(r.candidate.success_rate)}</strong><small>覆盖率 {pct(r.candidate.decision_coverage)}</small><a href={`#/runs/${r.candidate.run_id}`}>查看候选<Icon name="arrow" size={14}/></a></div><div className="panel compare-number delta"><span>成功率变化</span><strong className={r.success_rate_delta != null && r.success_rate_delta < 0 ? 'negative' : 'positive'}>{r.success_rate_delta == null ? '—' : `${r.success_rate_delta > 0 ? '+' : ''}${(r.success_rate_delta * 100).toFixed(1)}`}<em>pp</em></strong><small>百分点 · 按已判定试验计算</small></div></div><div className="changes-grid">{[{ title: '新增失败', keys: r.new_failures, color: 'negative', hint: '基线通过，候选失败' }, { title: '已修复', keys: r.fixed_cases, color: 'positive', hint: '基线失败，候选通过' }, { title: '证据不足 / 波动', keys: r.uncertain_cases, color: 'amber-text', hint: '需要补充证据或更多重复试验' }].map(group => <section className="panel change-card" key={group.title}><h3>{group.title}<span className={group.color}>{group.keys.length}</span></h3><p>{group.hint}</p>{group.keys.length ? group.keys.map(key => <a className="case-change" href={`#/runs/${r.candidate.run_id}`} key={key}><code>{key}</code><Icon name="chevron" size={15}/></a>) : <div className="no-changes">无此类用例</div>}</section>)}</div><section className="panel"><div className="panel-heading"><div><h2>比较协议</h2><p>报告绑定固定批次，后续重评不会改写当前报告</p></div><span className="tag">{r.mode === 'strict' ? '严格比较' : '探索比较'}</span></div><dl className="protocol-list"><div><dt>可比性校验</dt><dd>{r.compatible ? '一致' : '存在差异'}</dd></div><div><dt>基线评分批次</dt><dd className="mono">{r.baseline_batch_id}</dd></div><div><dt>候选评分批次</dt><dd className="mono">{r.candidate_batch_id}</dd></div><div><dt>条件差异</dt><dd>{r.differences.join('、') || '无'}</dd></div></dl></section></>}</>;
+}
