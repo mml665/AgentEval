@@ -148,6 +148,16 @@ class Coordinator:
                 observed.trace_id, observed.trace_completeness = row["trace_id"], "partial"
                 persist_trace(session, observed.id, [row])
         capture = {"on_span": on_span}
+        environment = None
+        definition = run.manifest["profile"].get("environment")
+        if definition:
+            from agenteval.environment import ENVIRONMENTS
+            environment = ENVIRONMENTS[definition["adapter_id"]](self.settings.environment_root, execution.id)
+            try:
+                request["environment"] = await asyncio.to_thread(environment.prepare, case.definition["assertions"].get("environment_initial", {}))
+            except Exception as exc:
+                self.finish(item_id, owner, epoch, "infrastructure_failed", error={"code": "ENVIRONMENT_PREPARE_FAILED", "type": type(exc).__name__})
+                return
         task = asyncio.create_task(invoke_traced(agent["adapter_type"], agent["configuration"], request, timeout, self.settings, capture))
         try:
             async with asyncio.timeout(timeout):
@@ -180,17 +190,25 @@ class Coordinator:
             await asyncio.gather(task, return_exceptions=True)
         if response is not None:
             response["trace_completeness"] = capture.get("completeness", "unavailable")
-        self.finish(item_id, owner, epoch, status, response, error, (time.monotonic() - started) * 1000, capture)
+            response["trace_spans"] = capture.get("spans", [])
+        environment_evidence = None
+        if environment:
+            from agenteval.environment import collect
+            # Unknown remote effects retain their isolated state; reset only after confirmed completion.
+            safe = status in ("completed", "agent_failed") and not lost.is_set()
+            environment_evidence = await asyncio.to_thread(collect, environment, safe)
+        self.finish(item_id, owner, epoch, status, response, error, (time.monotonic() - started) * 1000, capture, environment_evidence)
 
-    def finish(self, item_id, owner, epoch, status, response=None, error=None, latency=None, trace_capture=None):
+    def finish(self, item_id, owner, epoch, status, response=None, error=None, latency=None, trace_capture=None, environment_evidence=None):
         with self.locked(self.project(item_id)) as session:
             item = session.get(WorkItem, item_id)
             execution = session.get(Execution, item.target_id)
             if not self.fenced(item, owner, epoch):
-                execution.late_result = {"epoch": epoch, "status": status, "response": response, "error": error}
+                execution.late_result = {"epoch": epoch, "status": status, "response": response, "error": error, "environment_evidence": environment_evidence}
                 session.add(AuditEvent(run_id=item.run_id, action="STALE_RESULT_REJECTED", detail={"work_id": item.id, "epoch": epoch}))
                 return False
             execution.status, execution.response, execution.error = status, response, error
+            execution.environment_evidence = environment_evidence
             if trace_capture and trace_capture.get("spans"):
                 execution.trace_id = trace_capture["trace_id"]
                 execution.trace_completeness = trace_capture.get("completeness", "partial")
@@ -254,7 +272,7 @@ class Coordinator:
                 if spec.id == "llm_judge" and execution.status == "completed":
                     value = judge(spec, case, execution.response or {}, judge_settings, self, item_id, owner, epoch, batch.id, execution.id)
                 else:
-                    value = evaluate(spec, case, execution.response or {})
+                    value = evaluate(spec, case, execution.response or {}, environment_evidence=execution.environment_evidence)
                 with self.locked(item.project_id) as session:
                     current = session.get(WorkItem, item_id)
                     if not self.fenced(current, owner, epoch):

@@ -59,6 +59,11 @@ def report(session, batch):
                      "reasons": assessment.reasons, "execution_id": assessment.selected_execution_id,
                      "execution_status": by_execution[assessment.selected_execution_id].status})
     latencies = [e.latency_ms for e in executions if e.status == "completed" and e.latency_ms is not None]
+    from agenteval.metrics import specialty_metrics
+    selected_ids = {e.id for e in executions}
+    selected_results = [{**r.result, "execution_id": r.execution_id} for r in results if r.execution_id in selected_ids]
+    specialized = specialty_metrics(batch.grading_manifest.get("evaluators", []), selected_results, executions, all_executions, trials, rows)
+    expected_scores = len(all_executions) * len(batch.grading_manifest.get("evaluators", []))
     return {
         "run_id": run.id, "grading_batch_id": batch.id, "grading_status": batch.status,
         "run_status": run.status, "manifest_hash": run.manifest_hash,
@@ -66,11 +71,12 @@ def report(session, batch):
         "planned_trials": n, "success_rate": p / (p + f) if p + f else None,
         "decision_coverage": (p + f) / n if n else 0,
         "confirmed_success_fraction": p / n if n else 0,
-        "scoring_coverage": sum(r.result["grading_status"] == "scored" for r in results) / len(results) if results else 0,
+        "scoring_coverage": sum(r.result["grading_status"] == "scored" for r in results) / expected_scores if expected_scores else 0,
         "latency_ms": {"p50": nearest_rank(latencies, .5), "p95": nearest_rank(latencies, .95), "samples": len(latencies)},
         "execution_counts": dict(Counter(e.status for e in all_executions)), "trials": rows,
         "attempts": len(all_executions), "retry_rate": len({e.trial_id for e in all_executions if e.attempt_index > 0}) / n if n else 0,
         "hard_constraint_violations": sum(r.result["hard_constraint"] and r.result["passed"] is False for r in results),
+        "specialty_metrics": specialized,
     }
 
 
@@ -107,14 +113,20 @@ def compare(session, baseline_batch, candidate_batch, mode):
     reasons = []
     core = set(gate["core_case_keys"])
     core_failed = any(r["case_key"] in core and r["verdict"] == "failed" for r in c["trials"])
+    from agenteval.metrics import extra_gate
+    extra_failed, extra_missing = extra_gate(gate, b, c)
     if mode != "strict" or differences:
         status, reasons = "inconclusive", ["EXPLORATORY_OR_INCOMPATIBLE"]
     elif c["hard_constraint_violations"] or core_failed:
         status, reasons = "failed", ["HARD_CONSTRAINT_OR_CORE_CASE_FAILURE"]
+    elif extra_failed:
+        status, reasons = "failed", extra_failed
     elif min(b["decision_coverage"], c["decision_coverage"]) < gate["min_decision_coverage"] or delta is None or uncertain:
         status, reasons = "inconclusive", ["INCOMPLETE_OR_VARIABLE_EVIDENCE"]
     elif c["success_rate"] < gate["min_success_rate"] or delta < -gate["max_success_rate_drop"]:
         status, reasons = "failed", ["SUCCESS_RATE_THRESHOLD"]
+    elif extra_missing:
+        status, reasons = "inconclusive", extra_missing
     else:
         status = "passed"
     return {"baseline_batch_id": baseline_batch.id, "candidate_batch_id": candidate_batch.id,
@@ -122,5 +134,27 @@ def compare(session, baseline_batch, candidate_batch, mode):
             "baseline": b, "candidate": c, "success_rate_delta": delta,
             "new_failures": added, "fixed_cases": fixed, "uncertain_cases": uncertain,
             "agent_changes": {"baseline": baseline.manifest["agent"], "candidate": candidate.manifest["agent"]},
+            "metric_deltas": metric_deltas(b, c),
             "gate": {"status": status, "reasons": reasons}}
+
+
+def metric_deltas(baseline, candidate):
+    def collect(value, prefix=""):
+        values = {}
+        for key, item in value.items():
+            path = f"{prefix}/{key}"
+            if isinstance(item, dict):
+                values.update(collect(item, path))
+            elif type(item) in (int, float):
+                values[path] = item
+        return values
+    old, new = collect(baseline["specialty_metrics"]), collect(candidate["specialty_metrics"])
+    # Per-instance metrics remain independently comparable; never average four grains.
+    for grain in ("e2e", "trajectory", "tool", "component"):
+        for root, report in ((old, baseline), (new, candidate)):
+            for item in report["specialty_metrics"]["granularities"][grain]["evaluators"]:
+                if item["mean_score"] is not None:
+                    root[f"/{grain}/{item['instance_id']}/mean_score"] = item["mean_score"]
+    return {key: {"baseline": old.get(key), "candidate": new.get(key), "delta": new[key] - old[key] if key in old and key in new else None}
+            for key in sorted(set(old) | set(new))}
 

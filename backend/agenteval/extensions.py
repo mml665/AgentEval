@@ -5,11 +5,37 @@ from sqlalchemy import func, or_, select
 
 from agenteval.contracts import ComponentRunCreate, RunCreate, digest
 from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison, EvaluationResult,
-                         Execution, GradingBatch, JudgeBudget, JudgeCall, ProfileVersion, Project, Run, TestCase, TraceSpan, Trial)
+                         Execution, GradingBatch, JudgeBudget, JudgeCall, ProfileVersion, Project, Run, TestCase, TraceSpan, Trial, TrialAssessment)
+from agenteval.calibration import CalibrationRequest, analyze
 from agenteval.service import report
 
 
 def install(router, settings, sessions, database, get, serialize, create_run, runner):
+    @router.post("/evaluations/{run_id}/calibration")
+    def calibration(run_id: str, body: CalibrationRequest, session=Depends(database)):
+        run = get(session, Run, run_id)
+        batch = get(session, GradingBatch, body.grading_batch_id)
+        if batch.run_id != run_id:
+            raise HTTPException(404)
+        if batch.status != "completed":
+            raise HTTPException(409, detail={"code": "GRADING_NOT_COMPLETE"})
+        spec = next((e for e in batch.grading_manifest["evaluators"] if e["instance_id"] == body.instance_id), None)
+        if not spec or spec["id"] != "llm_judge":
+            raise HTTPException(422, detail={"code": "CALIBRATION_REQUIRES_JUDGE_INSTANCE"})
+        cases = {c.id: c for c in session.scalars(select(TestCase).filter_by(benchmark_version_id=run.benchmark_version_id))}
+        if {x.case_key for x in body.labels} - {c.case_key for c in cases.values()}:
+            raise HTTPException(422, detail={"code": "UNKNOWN_CALIBRATION_CASE"})
+        trials = {t.id: t for t in session.scalars(select(Trial).filter_by(run_id=run_id))}
+        selected = {a.selected_execution_id: cases[trials[a.trial_id].case_id].case_key for a in session.scalars(select(TrialAssessment).filter_by(batch_id=batch.id))}
+        ratings = [{"case_key": selected[r.execution_id], **r.result} for r in session.scalars(select(EvaluationResult).where(
+            EvaluationResult.batch_id == batch.id, EvaluationResult.instance_id == body.instance_id)) if r.execution_id in selected]
+        report = analyze([x.model_dump() for x in body.labels], ratings, planned_repetitions=batch.grading_manifest["execution"]["repetitions"])
+        return {**report, "run_id": run.id, "grading_batch_id": batch.id, "instance_id": body.instance_id,
+                "manifest_hash": run.manifest_hash, "judge": batch.grading_manifest.get("judge"),
+                "annotation_source": body.annotation_source, "labelled_cases": len(body.labels),
+                "labels": [x.model_dump() for x in body.labels],
+                "benchmark_cases": len(cases)}
+
     @router.get("/workspace/{project_id}")
     def workspace(project_id: str, limit: int = Query(25, ge=1, le=100),
         agents_offset: int = Query(0, ge=0), benchmarks_offset: int = Query(0, ge=0),

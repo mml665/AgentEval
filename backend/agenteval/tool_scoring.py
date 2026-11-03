@@ -46,7 +46,27 @@ def validate_assertions(assertions):
         visit(node, set())
 
 
-def score_calls(assertions, calls, response, allow_extra_calls=False):
+def score_calls(assertions, calls, response, allow_extra_calls=False, *, complete=False, call_id_map=None, match_by="call_id"):
+    from copy import deepcopy
+    calls = deepcopy(calls)
+    if match_by == "name_occurrence":
+        if not complete:
+            return "missing_evidence", None, {"reason": "Occurrence mapping requires a complete ordered tool channel"}
+        # Explicit opt-in: nth expected occurrence of a name maps to nth observed occurrence.
+        groups = {}
+        for rule in assertions:
+            groups.setdefault(rule["name"], []).append(rule["call_id"])
+        counts = {}
+        for index, call in enumerate(calls):
+            name = call.get("name")
+            occurrence = counts.get(name, 0)
+            counts[name] = occurrence + 1
+            candidates = groups.get(name, [])
+            call["call_id"] = candidates[occurrence] if occurrence < len(candidates) else f"__extra_{index}"
+    elif call_id_map:
+        inverse = {observed: expected for expected, observed in call_id_map.items()}
+        for call in calls:
+            call["call_id"] = inverse.get(call.get("call_id"), call.get("call_id"))
     ids = [c.get("call_id") for c in calls]
     if any(not x for x in ids) or len(ids) != len(set(ids)):
         return "missing_evidence", None, {"reason": "Unique call_id required for every observed call"}
@@ -57,10 +77,13 @@ def score_calls(assertions, calls, response, allow_extra_calls=False):
         call = by_id.get(rule.call_id)
         checks = {}
         if call is None:
-            checks["present"] = False
+            checks["present"] = False if complete else None
+            missing |= not complete
         else:
-            checks["name"] = call.get("name") == rule.name
-            checks["success"] = call.get("status") == "ok"
+            checks["name"] = call["name"] == rule.name if "name" in call else None
+            missing |= checks["name"] is None
+            checks["success"] = None if call.get("status") not in ("ok", "error") else call["status"] == "ok"
+            missing |= checks["success"] is None
             arguments = call.get("arguments")
             if not isinstance(arguments, dict) or "output" not in call:
                 missing = True
@@ -83,13 +106,17 @@ def score_calls(assertions, calls, response, allow_extra_calls=False):
                         checks[f"usage:{i}"] = canonical(pointer(response, use["actual_path"])) == canonical(pointer(call["output"], use["tool_output_path"]))
                     except (KeyError, IndexError, TypeError):
                         missing = True
-        evidence.append({"call_id": rule.call_id, "checks": checks, "passed": bool(checks) and all(checks.values())})
+        passed = False if False in checks.values() else None if missing or None in checks.values() else True
+        evidence.append({"call_id": rule.call_id, "checks": checks, "passed": passed})
     if not allow_extra_calls:
         expected = {r["call_id"] for r in assertions}
         evidence.extend({"call_id": key, "checks": {"expected": False}, "passed": False} for key in by_id if key not in expected)
     # Proven failures remain failures even if another call lacks evidence.
-    if any(not row["passed"] for row in evidence):
-        return "scored", sum(r["passed"] for r in evidence) / len(evidence), {"calls": evidence}
+    if any(row["passed"] is False for row in evidence):
+        # Unknown companion calls do not dilute a proven failure into an accidental pass.
+        return "scored", 0.0 if missing else sum(r["passed"] is True for r in evidence) / len(evidence), {"calls": evidence, "complete": complete, "match_by": match_by}
     if missing:
-        return "missing_evidence", None, {"calls": evidence}
-    return "scored", 1.0, {"calls": evidence}
+        return "missing_evidence", None, {"calls": evidence, "complete": complete, "match_by": match_by}
+    if not complete:
+        return "missing_evidence", None, {"calls": evidence, "reason": "Observation channel is incomplete"}
+    return "scored", 1.0, {"calls": evidence, "complete": complete, "match_by": match_by}

@@ -14,6 +14,7 @@ def test_initial_migration_is_repeatable(tmp_path):
     engine, _ = make_database(url)
     tables = inspect(engine).get_table_names()
     assert {"trial_assessments", "grading_batches", "request_dedup", "evaluation_runs"} <= set(tables)
+    assert "environment_evidence" in {c["name"] for c in inspect(engine).get_columns("case_executions")}
     engine.dispose()
 
 

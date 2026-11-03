@@ -11,11 +11,20 @@ export interface Profile extends Entity { project_id: string; name: string; vers
 export interface Run extends Entity { project_id: string; agent_version_id: string; benchmark_version_id: string; profile_version_id: string; status: string; manifest_hash: string; manifest: { agent: { adapter_type: string; configuration: RecordJSON }; profile: Profile['definition'] }; grading_batches?: Batch[] }
 export interface Batch extends Entity { run_id: string; revision: number; status: string }
 export interface Trial { trial_id: string; case_key: string; repetition_index: number; verdict: string; reasons: string[]; execution_id: string; execution_status: string }
-export interface Report { run_id: string; grading_batch_id: string; run_status: string; grading_status: string; planned_trials: number; counts: Record<string, number>; success_rate: number | null; decision_coverage: number; confirmed_success_fraction: number; scoring_coverage: number; latency_ms: { p50: number | null; p95: number | null; samples: number }; trials: Trial[]; trials_total?: number; hard_constraint_violations: number }
-export interface Execution extends Entity { trial_id: string; trace_id: string; status: string; response: RecordJSON | null; error: RecordJSON | null; latency_ms: number | null }
+export interface Report { specialty_metrics?: SpecialtyMetrics; run_id: string; grading_batch_id: string; run_status: string; grading_status: string; planned_trials: number; counts: Record<string, number>; success_rate: number | null; decision_coverage: number; confirmed_success_fraction: number; scoring_coverage: number; latency_ms: { p50: number | null; p95: number | null; samples: number }; trials: Trial[]; trials_total?: number; hard_constraint_violations: number }
+export interface Execution extends Entity { environment_evidence?: RecordJSON | null; trial_id: string; trace_id: string; status: string; response: RecordJSON | null; error: RecordJSON | null; latency_ms: number | null }
 export interface Score extends Entity { execution_id: string; instance_id: string; result: { evaluator_id: string; grading_status: string; passed: boolean | null; score: number | null; explanation: string; evidence: RecordJSON; required: boolean; hard_constraint: boolean } }
-export interface Comparison extends Entity { report: { baseline_batch_id: string; candidate_batch_id: string; mode: string; compatible: boolean; differences: string[]; baseline: Report; candidate: Report; success_rate_delta: number | null; new_failures: string[]; fixed_cases: string[]; uncertain_cases: string[]; gate: { status: string; reasons: string[] } } }
+export interface Comparison extends Entity { report: { metric_deltas?: Record<string, { baseline: number | null; candidate: number | null; delta: number | null }>; baseline_batch_id: string; candidate_batch_id: string; mode: string; compatible: boolean; differences: string[]; baseline: Report; candidate: Report; success_rate_delta: number | null; new_failures: string[]; fixed_cases: string[]; uncertain_cases: string[]; gate: { status: string; reasons: string[] } } }
 export interface Page<T> { items: T[]; total?: number; offset?: number; limit?: number }
 
 
 export interface WorkItem extends Entity { kind: string; target_id: string; status: string; epoch: number; delivery_count: number; last_error: string | null; lease_until: number }
+
+export interface SpecialtyMetrics {
+  granularities: Record<string, { evaluators: { instance_id: string; evaluator_id: string; metadata: { quality_dimension: string; scoring_method: string }; mean_score: number | null; pass_rate: number | null; coverage: number; scored: number; expected: number }[] }>;
+  state: { success_rate: number | null; coverage: number; validation_scope: string; reset_failures: number };
+  tool: { error_rate: number | null; samples: number };
+  trajectory: { loop_rate: number | null; recovery_rate: number | null };
+  reliability: { timeout_rate: number | null; repeated_run_success: number | null };
+  usage: { agent_tokens_per_task: number | null; agent_token_coverage: number };
+}

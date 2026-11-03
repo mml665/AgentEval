@@ -7,23 +7,60 @@ from jsonschema import Draft202012Validator
 from agenteval.contracts import EvaluatorSpec, canonical, pointer
 
 CAPABILITIES = {
-    "exact_match": None, "json_schema": None, "tool_selection": "tool_calls",
+    "exact_match": None, "json_schema": None, "state_assertion": None, "tool_selection": "tool_calls",
     "tool_arguments": "tool_calls", "tool_call": "tool_calls", "trajectory": "workflow_steps", "rag": "retrieval_results", "llm_judge": None,
 }
+
+
+def metadata(spec):
+    from agenteval.contracts import EvaluatorMetadata
+    grain = {"trajectory": "trajectory", "tool_call": "tool", "tool_arguments": "tool",
+             "tool_selection": "tool", "rag": "component"}.get(spec.id, "e2e")
+    evidence = {"state_assertion": ["independent_environment_snapshot"], "trajectory": ["workflow_steps"],
+                "tool_call": ["tool_calls"], "tool_arguments": ["tool_calls"], "tool_selection": ["tool_calls"],
+                "rag": ["retrieval_results", "complete_relevance_labels"]}.get(spec.id, ["output"])
+    if spec.id == "llm_judge":
+        grain = spec.config.get("granularity", "e2e")
+        evidence = [spec.config.get("actual_path", "/output"), "rubric"]
+    capability = CAPABILITIES[spec.id]
+    if spec.id == "llm_judge":
+        capability = {"trajectory": "workflow_steps", "tool": "tool_calls", "component": "retrieval_results"}.get(grain)
+    return EvaluatorMetadata(evaluator_id=spec.id, granularity=grain,
+        quality_dimension=spec.config.get("quality_dimension", "retrieval_quality" if spec.id == "rag" else "correctness"),
+        scoring_method="llm" if spec.id == "llm_judge" else "metric" if spec.id == "rag" else "rule",
+        required_capabilities=[capability] if capability else [],
+        required_evidence=evidence).model_dump()
 
 
 def validate_config(spec):
     allowed = {
         "exact_match": {"actual_path", "expected_path"},
         "json_schema": {"actual_path", "schema"},
-        "tool_selection": {"forbidden"}, "tool_arguments": set(), "tool_call": {"allow_extra_calls"},
-        "trajectory": set(), "rag": {"metric", "k"}, "llm_judge": {"rubric", "timeout_seconds"},
+        "state_assertion": set(),
+        "tool_selection": {"forbidden"}, "tool_arguments": set(), "tool_call": {"allow_extra_calls", "call_id_map", "match_by"},
+        "trajectory": set(), "rag": {"metric", "k"}, "llm_judge": {"rubric", "timeout_seconds", "granularity", "quality_dimension", "actual_path", "expected_path"},
     }[spec.id]
     if set(spec.config) - allowed:
         raise ValueError(f"Unknown configuration keys for {spec.id}")
     if spec.id == "tool_call" and type(spec.config.get("allow_extra_calls", False)) is not bool:
         raise ValueError("allow_extra_calls must be boolean")
+    if spec.id == "tool_call":
+        mapping = spec.config.get("call_id_map", {})
+        if not isinstance(mapping, dict) or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v for k, v in mapping.items()) or len(set(mapping.values())) != len(mapping):
+            raise ValueError("call_id_map must be a one-to-one expected-to-observed ID mapping")
+        if spec.config.get("match_by", "call_id") not in ("call_id", "name_occurrence"):
+            raise ValueError("Unknown tool matching mode")
+        if mapping and spec.config.get("match_by") == "name_occurrence":
+            raise ValueError("Use one explicit tool matching policy")
     if spec.id == "llm_judge":
+        if spec.config.get("granularity", "e2e") not in ("e2e", "trajectory", "tool", "component"):
+            raise ValueError("Unknown Judge granularity")
+        if "quality_dimension" in spec.config and (not isinstance(spec.config["quality_dimension"], str) or not 1 <= len(spec.config["quality_dimension"]) <= 64):
+            raise ValueError("quality_dimension must contain 1-64 characters")
+        grain = spec.config.get("granularity", "e2e")
+        required_path = {"trajectory": "/observations/workflow_steps", "tool": "/observations/tool_calls", "component": "/observations/retrieval_results"}.get(grain)
+        if required_path and spec.config.get("actual_path") != required_path:
+            raise ValueError("Non-E2E Judge must explicitly select its observation channel")
         rubric = spec.config.get("rubric")
         if not isinstance(rubric, str) or not 1 <= len(rubric) <= 4000:
             raise ValueError("Judge requires a rubric of 1-4000 characters")
@@ -82,15 +119,14 @@ def validate_case(spec: EvaluatorSpec, case: dict):
     elif spec.id == "tool_call":
         from agenteval.tool_scoring import validate_assertions
         validate_assertions(assertions["tool_calls"])
+        if set(spec.config.get("call_id_map", {})) - {r["call_id"] for r in assertions["tool_calls"]}:
+            raise ValueError("call_id_map references unknown expected call IDs")
     elif spec.id == "trajectory":
-        definition = assertions["trajectory"]
-        required = definition["required_steps"]
-        deps = definition.get("dependencies", [])
-        if not isinstance(required, list) or any(not isinstance(x, str) for x in required):
-            raise ValueError("required_steps must be strings")
-        if not isinstance(deps, list) or any(not isinstance(x, list) or len(x) != 2 or
-                                           any(not isinstance(y, str) for y in x) for x in deps):
-            raise ValueError("dependencies must be pairs of step names")
+        from agenteval.trajectory import TrajectoryRules
+        TrajectoryRules.model_validate(assertions["trajectory"])
+    elif spec.id == "state_assertion":
+        from agenteval.environment import StateAssertions
+        StateAssertions.model_validate(assertions["state"])
     elif spec.id == "rag":
         retrieval = assertions["retrieval"]
         if retrieval.get("judgment_status") != "complete":
@@ -112,11 +148,16 @@ def result(spec, status, score=None, evidence=None, explanation=""):
         "score": score, "passed": score >= spec.threshold if status == "scored" else None,
         "required": spec.required, "hard_constraint": spec.hard_constraint,
         "explanation": explanation, "evidence": evidence or {},
+        "metadata": metadata(spec),
     }
 
 
-def evaluate(spec: EvaluatorSpec, case: dict, response: dict) -> dict:
+def evaluate(spec: EvaluatorSpec, case: dict, response: dict, *, environment_evidence=None) -> dict:
     try:
+        if spec.id == "state_assertion":
+            from agenteval.environment import score_state
+            status, score, evidence = score_state(case["assertions"]["state"], environment_evidence)
+            return result(spec, status, score, evidence)
         return _evaluate(spec, case, response)
     except (KeyError, IndexError):
         return result(spec, "missing_evidence", explanation="Required observable input is absent")
@@ -128,6 +169,18 @@ def _evaluate(spec, case, response):
     if spec.id == "llm_judge":
         return result(spec, "missing_evidence", explanation="Agent execution did not produce a gradable result")
     assertions = case.get("assertions", {})
+    if spec.id == "trajectory":
+        from agenteval.trajectory import score_trajectory
+        status, score, evidence = score_trajectory(assertions["trajectory"], response)
+        return result(spec, status, score, evidence)
+    if spec.id == "tool_call":
+        from agenteval.tool_scoring import score_calls
+        complete = ("tool_calls" in response.get("observations_complete", []) and
+                    response.get("trace_completeness") not in ("partial", "invalid"))
+        status, score, evidence = score_calls(assertions["tool_calls"], response.get("observations", {}).get("tool_calls", []), response,
+            spec.config.get("allow_extra_calls", False), complete=complete,
+            call_id_map=spec.config.get("call_id_map"), match_by=spec.config.get("match_by", "call_id"))
+        return result(spec, status, score, evidence)
     capability = CAPABILITIES[spec.id]
     if capability:
         observations = response["observations"]
@@ -149,10 +202,6 @@ def _evaluate(spec, case, response):
         actual = pointer(response, spec.config.get("actual_path", "/output"))
         errors = [e.message for e in Draft202012Validator(spec.config["schema"]).iter_errors(actual)]
         return result(spec, "scored", float(not errors), {"errors": errors[:20]})
-    if spec.id == "tool_call":
-        from agenteval.tool_scoring import score_calls
-        status, score, evidence = score_calls(assertions["tool_calls"], actual, response, spec.config.get("allow_extra_calls", False))
-        return result(spec, status, score, evidence)
     if spec.id == "tool_selection":
         names = [x["name"] for x in actual]
         definition = assertions["tools"]
@@ -170,14 +219,6 @@ def _evaluate(spec, case, response):
                           for key, value in fields.items()) for c in calls))
         return result(spec, "scored", sum(checks) / len(checks),
                       {"expected": expected, "actual": actual})
-    if spec.id == "trajectory":
-        definition = assertions["trajectory"]
-        missing = sorted(set(definition["required_steps"]) - set(actual))
-        invalid = [pair for pair in definition.get("dependencies", [])
-                   if pair[0] not in actual or pair[1] not in actual or
-                   actual.index(pair[0]) >= actual.index(pair[1])]
-        return result(spec, "scored", float(not missing and not invalid),
-                      {"actual": actual, "missing": missing, "invalid_dependencies": invalid})
     if spec.id == "rag":
         labels = assertions["retrieval"]["relevance"]
         ranked = list(dict.fromkeys(actual))[:spec.config.get("k", 5)]

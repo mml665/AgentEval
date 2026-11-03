@@ -18,6 +18,7 @@ class Settings:
     judge_model: str = field(default_factory=lambda: os.getenv("AGENTEVAL_JUDGE_MODEL", ""))
     judge_api_key: str = field(default_factory=lambda: os.getenv("AGENTEVAL_JUDGE_API_KEY", ""), repr=False)
     judge_max_calls: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_MAX_CALLS", "100")))
+    environment_root: str = field(default_factory=lambda: os.getenv("AGENTEVAL_ENVIRONMENT_ROOT", "./data/environments"))
 
     def __post_init__(self):
         if self.execution_mode not in ("local", "celery") or not math.isfinite(self.lease_seconds) or self.lease_seconds < 1 or self.project_concurrency < 1 or self.judge_max_calls < 1:

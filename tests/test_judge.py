@@ -12,6 +12,34 @@ from agenteval.db import Base
 TOKEN = "test-token-for-local-tests-only"
 
 
+def test_calibration_api_binds_labels_to_fixed_judge_batch(client, setup_run):
+    s = setup_run
+    profile = s["post"]("profile-versions", {"project_id": s["project"]["id"], "name": "Calibration", "version": "1",
+        "execution": {"repetitions": 2}, "evaluators": [{"instance_id": "judge", "id": "llm_judge", "config": {"rubric": "Check answer"}}]})
+    run = s["post"]("evaluations", {**s["body"], "profile_version_id": profile["id"]})
+    body = {"grading_batch_id": run["grading_batch_id"], "instance_id": "judge", "annotation_source": "Protocol fixture, not real model calibration",
+            "labels": [{"case_key": "order-1001", "label": "passed", "rationale": "Expected status"}, {"case_key": "order-1002", "label": "failed", "rationale": "Intentional disagreement"}]}
+    value = s["post"](f"evaluations/{run['id']}/calibration", body)
+    assert value["agreement_rate"] == .5 and value["rating_coverage"] == 1
+    assert value["planned_ratings"] == 4
+    body["labels"][0]["case_key"] = "foreign-case"
+    assert client.post(f"/api/v1/evaluations/{run['id']}/calibration", json=body).status_code == 422
+
+
+def test_judge_can_grade_trajectory_without_using_final_answer(client, setup_run, judge_server):
+    s = setup_run
+    profile = s["post"]("profile-versions", {"project_id": s["project"]["id"], "name": "Trajectory judge", "version": "1",
+        "evaluators": [{"instance_id": "path_judge", "id": "llm_judge", "config": {
+            "rubric": "Compare observed steps with required steps", "granularity": "trajectory",
+            "actual_path": "/observations/workflow_steps", "expected_path": "/assertions/trajectory/required_steps"}}]})
+    run = s["post"]("evaluations", {**s["body"], "profile_version_id": profile["id"]})
+    payload = json.loads(judge_server["requests"][0]["messages"][1]["content"])
+    assert payload["answer"] == ["lookup", "respond"]
+    assert payload["reference"] == ["lookup", "respond"]
+    values = client.get(f"/api/v1/evaluations/{run['id']}/results").json()["items"]
+    assert values[0]["result"]["metadata"]["granularity"] == "trajectory"
+
+
 @pytest.fixture
 def judge_server():
     state = {"mode": "normal", "requests": []}

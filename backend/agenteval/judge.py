@@ -6,7 +6,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select, func
 
-from agenteval.contracts import canonical, digest
+from agenteval.contracts import canonical, digest, pointer
 from agenteval.db import GradingBatch, JudgeCall, JudgeBudget, WorkItem, TraceSpan
 from agenteval.evaluators import result
 
@@ -29,8 +29,17 @@ class Decision(BaseModel):
 def judge(spec, case, response, settings, coordinator, work_id, owner, epoch, batch_id, execution_id):
     if not settings.judge_endpoint or not settings.judge_model:
         return result(spec, "evaluator_error", explanation="JUDGE_NOT_CONFIGURED")
+    from agenteval.evaluators import metadata
+    for channel in metadata(spec)["required_capabilities"]:
+        if channel not in response.get("observations_complete", []) or response.get("trace_completeness") in ("partial", "invalid"):
+            return result(spec, "missing_evidence", explanation="Judge observation channel is incomplete")
+    try:
+        answer = pointer(response, spec.config.get("actual_path", "/output"))
+        reference = pointer(case, spec.config["expected_path"]) if "expected_path" in spec.config else case["assertions"].get("expected_output")
+    except (KeyError, IndexError, TypeError):
+        return result(spec, "missing_evidence", explanation="Judge subject or reference is absent")
     payload = {"rubric": spec.config["rubric"], "input": case["input"],
-               "reference": case["assertions"].get("expected_output"), "answer": response.get("output")}
+               "reference": reference, "answer": answer}
     content = canonical(payload)
     if len(content.encode()) > 48000:
         return result(spec, "missing_evidence", explanation="Judge input exceeds 48 KB; evidence was not silently truncated")

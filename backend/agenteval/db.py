@@ -115,6 +115,7 @@ class Execution(Entity):
     trace_id: Mapped[str] = mapped_column(default=uid, index=True)
     trace_completeness: Mapped[str] = mapped_column(default="unavailable", server_default="unavailable")
     late_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    environment_evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class GradingBatch(Entity):

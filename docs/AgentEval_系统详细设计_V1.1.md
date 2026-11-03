@@ -653,3 +653,19 @@ README.md
 ## 19. V1.1 相对 V1.0 的主要变化
 
 保留分层架构与 Adapter/Evaluator 插件方向；新增 Trial、GradingBatch、ReviewRecord、Artifact、Outbox 与租约模型，补齐版本与 API；明确评分分母、未知值、取消及迟到结果、外部副作用边界、Run Manifest、回归兼容性和单租户信任边界。实施以里程碑退出条件为准，原六周周期不作为交付承诺。
+
+## 20. 0.5 设计落地与范围修订
+
+新增 environment.py 的注册式 EnvironmentAdapter 协议（prepare、observe、reset），由 Coordinator 调用；Agent 声明的 final_state 不可代替平台独立读取的环境快照。0004 增加 Execution.environment_evidence JSON，保存来源、观察时间、状态哈希及重置结果。证据在重置前采集，重评读取持久化快照。初期实现为每次 Execution 独立 SQLite 退款环境，未知效果保留现场，namespace 已存在时拒绝擦除重建。有状态环境禁用只读声明与自动重试。
+
+trajectory.py 承担规则化轨迹验证，tool_scoring.py 显式接收观测完整性和调用映射策略。检查结果区分 true、false、unknown：已观察到的确定违规优先失败，无法证明缺失则保持证据不足。恢复检查使用工具结束时间与成功工作流 Span 的开始时间；没有时间证据时不能仅凭步骤名称判恢复成功。
+
+EvaluatorMetadata 表达粒度、质量维度、评分机制及能力/证据要求，随评分结果保存并通过注册表 API 暴露。LLM Judge 可配置不同粒度和对应输入/参考路径；非 E2E 使用前校验观测通道，避免为缺失过程数据发起模型请求。
+
+metrics.py 在 canonical Execution 上按评分项聚合平均得分、通过率、覆盖率及样本量，保留历史尝试的硬约束违规。状态、工具、轨迹、可靠性、Token 与 Judge 指标分别展示；不适用的度量为 null。P95 和工具错误率门禁有最少样本与证据覆盖条件。准确费用仍依赖完整 usage、可信价格和计费版本，不以 Token 或调用次数替代真实金额。
+
+calibration.py 对固定批次和导入标签计算一致率、混淆矩阵、评分覆盖、错误/复核率及重复波动，标签包含来源、理由和哈希，不覆盖 EvaluationResult。它是校准分析能力，尚未落地 ReviewRecord 的完整人工审批与审计工作流。开发者种子标签、协议模拟及真实模型校准分别标记，不混作独立人工验收。
+
+retrieval.py 提供不同算法的 SQLite FTS5 Retriever 与 TF-IDF Reranker，另提供部署注册的 HTTP 组件入口。examples/rag_service.py 独立进程接收查询或候选并返回有序文档、分数和方法元数据，核心 Runner 无需因接入而修改。输入与返回仍遵守可信部署及精确网络允许清单；此实现不等同于生产组件鉴权与网络隔离已验收。
+
+完整 Schema、示例、运行方式、边界与新增验收见 [0.5 验收说明](V0.5_ACCEPTANCE.md)。原设计中的 Artifact、ReviewRecord、全面脱敏、安全隔离及全套部署演练仍为待交付部分。

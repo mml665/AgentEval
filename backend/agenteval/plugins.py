@@ -48,7 +48,10 @@ def failing_agent(request):
 
 PLUGINS = {"example.order.v1": order_agent, "example.order.v2": order_agent_regressed,
            "example.slow": slow_agent, "example.failing": failing_agent}
+from agenteval.refund_agents import refund_python, refund_liar, calibration_echo
+PLUGINS.update({"example.refund.python": refund_python, "example.refund.liar": refund_liar,
+                "calibration.echo": calibration_echo})
 
 # Deployment-owned factory names; requests may select IDs, never module paths.
-GRAPH_PLUGINS = {"example.order.graph": "order_graph"}
+GRAPH_PLUGINS = {"example.order.graph": "order_graph", "example.refund.graph": "refund_graph"}
 

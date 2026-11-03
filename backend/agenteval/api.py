@@ -21,7 +21,7 @@ from agenteval.contracts import (AgentCreate, AgentVersionCreate, BenchmarkCreat
 from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison,
                          EvaluationResult, Execution, GradingBatch, ProfileVersion,
                          Project, RequestDedup, Run, TestCase, Trial, make_database)
-from agenteval.evaluators import CAPABILITIES, validate_case
+from agenteval.evaluators import CAPABILITIES, metadata, validate_case
 from agenteval.limits import RequestLimit
 from agenteval.service import LocalRunner, compare, records, report, snapshot
 from agenteval.durable import Coordinator, enqueue
@@ -156,6 +156,16 @@ def create_app(settings=None):
     def create_project(body: Named, session=Depends(database)):
         return add(session, Project(**body.model_dump()))
 
+    @router.get("/evaluators")
+    def evaluator_registry():
+        from agenteval.contracts import EvaluatorSpec
+        return {"items": [metadata(EvaluatorSpec.model_construct(id=key, config={})) for key in CAPABILITIES]}
+
+    @router.get("/environments")
+    def environment_registry():
+        from agenteval.environment import ENVIRONMENTS
+        return {"items": [{"id": key, "isolation": "per_execution", "initial_state": {}} for key in ENVIRONMENTS]}
+
     @router.get("/projects")
     def projects(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
         return page(session, Project, offset, limit)
@@ -257,9 +267,9 @@ def create_app(settings=None):
             raise HTTPException(422, detail={"code": "UNKNOWN_CORE_CASE"})
         errors = []
         for spec in specs:
-            capability = CAPABILITIES[spec.id]
-            if capability and capability not in version.capabilities:
-                errors.append({"evaluator": spec.instance_id, "code": "CAPABILITY_MISSING", "capability": capability})
+            for capability in metadata(spec)["required_capabilities"]:
+                if capability not in version.capabilities:
+                    errors.append({"evaluator": spec.instance_id, "code": "CAPABILITY_MISSING", "capability": capability})
             for case in cases:
                 try:
                     validate_case(spec, case.definition)
@@ -267,6 +277,11 @@ def create_app(settings=None):
                     errors.append({"case_key": case.case_key, "evaluator": spec.instance_id, "code": "INVALID_ASSERTIONS"})
         if errors:
             raise HTTPException(422, detail={"code": "PREFLIGHT_FAILED", "errors": errors[:100]})
+        if profile.definition.get("environment"):
+            if version.effects == "read_only" or profile.definition["execution"].get("max_retries", 0):
+                raise HTTPException(422, detail={"code": "STATEFUL_ENVIRONMENT_REQUIRES_NO_RETRY"})
+            if any(c.definition["assertions"].get("environment_initial", {}) != {} for c in cases):
+                raise HTTPException(422, detail={"code": "INVALID_ENVIRONMENT_INITIAL_STATE"})
         if profile.definition["execution"].get("max_retries", 0) and version.effects != "read_only":
             raise HTTPException(422, detail={"code": "RETRY_REQUIRES_READ_ONLY"})
         judge_specs = [e for e in specs if e.id == "llm_judge"]

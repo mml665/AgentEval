@@ -2,11 +2,12 @@
 
 面向异构 Agent 的自动化评测与回归分析平台。
 
-**当前版本：0.4.0。** 已交付运行健康与恢复、Judge 预算快照、分页批量读取、JSON/CSV/HTML 导出、结构化 Trace 树与时间线、逐调用工具评分及独立 Retriever/Reranker 评测。执行、LangGraph、Judge 与回归能力沿用 0.3 协议；真实裁判校准和完整生产安全验收仍待完成。
+**当前版本：0.5.0。** 在 0.4 执行与 Trace 闭环上，新增独立环境状态验证、轨迹规则、工具证据与 ID 映射、评分器三层元数据、专项指标及性能门禁、Judge 标签校准流程、独立 FTS5 Retriever / TF-IDF Reranker 与 HTTP 接入。真实业务 Agent 的通用性、实际模型校准和完整生产验收仍待验证。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
 - [实际构建状态、限制与验证记录](docs/BUILD_STATUS.md)
+- [0.5 使用契约与验收边界](docs/V0.5_ACCEPTANCE.md)
 
 ## 本地启动
 
@@ -106,6 +107,7 @@ $env:PYTHONPATH = 'backend'
 ```powershell
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe scripts/smoke.py
+.venv/Scripts/python.exe scripts/v05_smoke.py
 ```
 
 测试包括真实 HTTP/Python/LangGraph 调用、超时、重复投递、租约过期、旧结果拒绝、未知结果保留、Judge 故障、历史重评及旧版本迁移。`scripts/smoke.py` 自动启动临时 API 和 HTTP Agent，通过 SDK 执行完整回归，最后关闭进程；临时数据库和证据位于被 Git 忽略的 `.build/`。
@@ -122,6 +124,8 @@ $env:PYTHONPATH = 'backend'
 | 数据集 | POST/GET `/api/v1/benchmarks` |
 | 发布数据集版本 | POST `/api/v1/benchmarks/{id}/versions` |
 | 评分方案 | POST/GET `/api/v1/profile-versions` |
+| 评分器 / 环境注册表 | GET `/api/v1/evaluators`、`/api/v1/environments` |
+| Judge 标签校准 | POST `/api/v1/evaluations/{id}/calibration` |
 | 执行 | POST/GET `/api/v1/evaluations` |
 | 状态与批次 | GET `/api/v1/evaluations/{id}` |
 | 报告/评分/失败项 | GET `/api/v1/evaluations/{id}/report`、`results`、`bad-cases` |

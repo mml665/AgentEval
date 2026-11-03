@@ -1,6 +1,8 @@
 import { test, expect, type Page } from '@playwright/test';
 
 const token = 'local-browser-test-token-only';
+
+
 async function login(page: Page) {
   await page.goto('/');
   await page.getByLabel('访问令牌', { exact: true }).fill(token);
@@ -32,6 +34,8 @@ test('login rejects invalid token, then completes real evaluation, evidence and 
   await page.getByRole('link', { name: '评测任务', exact: false }).click();
   await page.getByRole('button', { name: 'Order Assistant · v2.0', exact: true }).click();
   await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '专项能力与证据覆盖' })).toBeVisible();
+  await expect(page.getByText('仅验证输出与声明的过程观测；未独立核验业务环境状态。')).toBeVisible();
   await page.getByLabel('用例结果筛选').selectOption('bad');
   await expect(page.locator('section.panel').filter({ has: page.getByRole('heading', { name: '用例执行结果' }) }).locator('tbody tr')).toHaveCount(1);
   await page.getByRole('button', { name: '查看证据' }).click();
@@ -145,4 +149,32 @@ test('health, standalone component, trace timeline, export and pagination work t
   const secondPage = await page.locator('.resource-card h2').allTextContents();
   expect(firstPage.filter(name => secondPage.includes(name))).toHaveLength(0);
   await page.screenshot({ path: '../.build/console-paging.png', fullPage: true });
+});
+
+test('independent state evidence rejects a false success claim and is inspectable', async ({ page, request }) => {
+  async function post(path: string, data: unknown) {
+    const response = await request.post(`/api/v1/${path}`, { data, headers: { Authorization: `Bearer ${token}` } });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    return response.json();
+  }
+  const project = await post('projects', { name: '状态验证浏览器验收' });
+  const agent = await post('agents', { project_id: project.id, name: '假报成功反例', adapter_type: 'python' });
+  const av = await post(`agents/${agent.id}/versions`, { version: '1', configuration: { plugin_id: 'example.refund.liar' } });
+  const bm = await post('benchmarks', { project_id: project.id, name: '退款状态' });
+  const bv = await post(`benchmarks/${bm.id}/versions`, { version: '1', cases: [{ case_key: 'refund-1', input: { order_id: '1' }, assertions: {
+    expected_output: { order_id: '1', status: 'requested' }, state: { checks: [{ path: '/refunds', expected: [{ order_id: '1', status: 'requested' }] }] } } }] });
+  const profile = await post('profile-versions', { project_id: project.id, name: '独立状态', version: '1', environment: { adapter_id: 'sqlite.refund.v1' },
+    evaluators: [{ instance_id: 'answer', id: 'exact_match' }, { instance_id: 'state', id: 'state_assertion' }] });
+  const run = await post('evaluations', { agent_version_id: av.id, benchmark_version_id: bv.id, profile_version_id: profile.id });
+  await login(page);
+  await page.getByLabel('当前项目', { exact: true }).selectOption(project.id);
+  await page.goto(`/#/runs/${run.id}`);
+  await expect(page.getByText('已使用独立环境状态快照评分；快照在环境重置前保存。')).toBeVisible();
+  const table = page.locator('section.panel').filter({ has: page.getByRole('heading', { name: '专项能力与证据覆盖' }) });
+  await expect(table.locator('tr').filter({ hasText: 'state_assertion' })).toContainText('0%');
+  await expect(table.locator('tr').filter({ hasText: 'exact_match' })).toContainText('100%');
+  await page.getByRole('button', { name: '查看证据' }).click();
+  await expect(page.getByRole('dialog')).toContainText('independent_environment_adapter');
+  await expect(page.getByRole('dialog')).toContainText('verified');
+  await page.screenshot({ path: '../.build/console-state-proof.png', fullPage: true });
 });

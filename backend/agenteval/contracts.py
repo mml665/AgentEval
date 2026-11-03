@@ -71,7 +71,27 @@ class BenchmarkVersionCreate(Contract):
         return self
 
 
-EvaluatorID = Literal["exact_match", "json_schema", "tool_selection", "tool_arguments", "tool_call", "trajectory", "rag", "llm_judge"]
+EvaluatorID = Literal["exact_match", "json_schema", "state_assertion", "tool_selection", "tool_arguments", "tool_call", "trajectory", "rag", "llm_judge"]
+
+
+class EvaluatorMetadata(Contract):
+    evaluator_id: str
+    granularity: Literal["e2e", "trajectory", "tool", "component"]
+    quality_dimension: str
+    scoring_method: Literal["rule", "metric", "llm"]
+    required_capabilities: list[str] = []
+    required_evidence: list[str] = []
+
+
+class EnvironmentSpec(Contract):
+    adapter_id: str
+
+    @model_validator(mode="after")
+    def registered(self):
+        from agenteval.environment import ENVIRONMENTS
+        if self.adapter_id not in ENVIRONMENTS:
+            raise ValueError("Environment must be deployment-registered")
+        return self
 
 
 class EvaluatorSpec(Contract):
@@ -104,6 +124,11 @@ class Gate(Contract):
     min_success_rate: float = Field(default=0.95, ge=0, le=1)
     max_success_rate_drop: float = Field(default=0, ge=0, le=1)
     core_case_keys: list[str] = []
+    min_scoring_coverage: float = Field(default=0, ge=0, le=1)
+    max_p95_latency_ms: float | None = Field(default=None, gt=0)
+    min_latency_samples: int = Field(default=20, ge=1)
+    max_tool_error_rate: float | None = Field(default=None, ge=0, le=1)
+    min_tool_samples: int = Field(default=20, ge=1)
 
 
 class ProfileCreate(Named):
@@ -112,6 +137,7 @@ class ProfileCreate(Named):
     evaluators: list[EvaluatorSpec] = Field(min_length=1, max_length=20)
     execution: ExecutionPolicy = Field(default_factory=ExecutionPolicy)
     gate: Gate = Field(default_factory=Gate)
+    environment: EnvironmentSpec | None = None
 
     @model_validator(mode="after")
     def validate_profile(self):
@@ -120,6 +146,8 @@ class ProfileCreate(Named):
             raise ValueError("Duplicate evaluator instance_id")
         if not any(e.required and not e.hard_constraint for e in self.evaluators):
             raise ValueError("A required task evaluator is necessary")
+        if any(e.id == "state_assertion" for e in self.evaluators) and self.environment is None:
+            raise ValueError("State assertion requires an independent environment adapter")
         return self
 
 

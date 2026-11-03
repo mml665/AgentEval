@@ -1,0 +1,9 @@
+{
+  "version": "seed-1.0",
+  "annotation_source": "Developer-authored relevance judgments; pending independent human review",
+  "cases": [
+    {"case_key": "refund", "input": {"query": "refund payment", "k": 2, "documents": [{"id": "refund", "text": "refund payment return money"}, {"id": "tracking", "text": "parcel tracking delivery"}, {"id": "returns", "text": "return item refund policy"}]}, "assertions": {"retrieval": {"judgment_status": "complete", "relevance": {"refund": 2, "tracking": 0, "returns": 1}}}},
+    {"case_key": "tracking", "input": {"query": "parcel tracking", "k": 2, "documents": [{"id": "payment", "text": "payment credit card"}, {"id": "tracking", "text": "parcel tracking number shipment"}, {"id": "delivery", "text": "parcel delivery date"}]}, "assertions": {"retrieval": {"judgment_status": "complete", "relevance": {"payment": 0, "tracking": 2, "delivery": 1}}}},
+    {"case_key": "no-match", "input": {"query": "account password", "k": 2, "documents": [{"id": "payment", "text": "credit card refund"}, {"id": "tracking", "text": "parcel delivery"}, {"id": "support", "text": "contact support for assistance"}]}, "assertions": {"retrieval": {"judgment_status": "complete", "relevance": {"payment": 0, "tracking": 0, "support": 1}}}}
+  ]
+}

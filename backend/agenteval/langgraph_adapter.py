@@ -33,13 +33,14 @@ def order_graph():
             .add_edge(START, "lookup").add_edge("lookup", "respond").add_edge("respond", END).compile())
 
 
+from agenteval.refund_agents import refund_graph
 GRAPHS = {key: globals()[name] for key, name in GRAPH_PLUGINS.items()}
 
 
 def invoke_graph(plugin_id, request):
     graph = GRAPHS[plugin_id]()
     steps, state = [], {}
-    for part in graph.stream({"input": request["input"]}, stream_mode=["updates", "values"], version="v2"):
+    for part in graph.stream({"input": request["input"], "environment": request.get("environment", {})}, stream_mode=["updates", "values"], version="v2"):
         if part["type"] == "updates":
             steps.extend(part["data"].keys())
         elif part["type"] == "values":

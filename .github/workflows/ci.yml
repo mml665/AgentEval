@@ -43,6 +43,7 @@ jobs:
       - run: python -m pip install -r requirements.lock
       - run: python -m pytest -q
       - run: python scripts/smoke.py
+      - run: python scripts/v05_smoke.py
   postgres:
     runs-on: ubuntu-latest
     services:

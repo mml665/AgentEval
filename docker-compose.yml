@@ -38,6 +38,11 @@ services:
       AGENTEVAL_JUDGE_MODEL: ${AGENTEVAL_JUDGE_MODEL:-}
       AGENTEVAL_JUDGE_API_KEY: ${AGENTEVAL_JUDGE_API_KEY:-}
       AGENTEVAL_JUDGE_MAX_CALLS: ${AGENTEVAL_JUDGE_MAX_CALLS:-100}
+      AGENTEVAL_ENVIRONMENT_ROOT: /app/data/environments
+      AGENTEVAL_RETRIEVER_ENDPOINT: ${AGENTEVAL_RETRIEVER_ENDPOINT:-}
+      AGENTEVAL_RERANKER_ENDPOINT: ${AGENTEVAL_RERANKER_ENDPOINT:-}
+    volumes:
+      - environment-data:/app/data/environments
     depends_on:
       db:
         condition: service_healthy
@@ -51,6 +56,8 @@ services:
   worker:
     build: .
     environment: *runtime
+    volumes:
+      - environment-data:/app/data/environments
     command: ["python", "-m", "agenteval", "worker"]
     depends_on:
       api:
@@ -67,4 +74,5 @@ services:
 volumes:
   postgres-data:
   redis-data:
+  environment-data:
 
