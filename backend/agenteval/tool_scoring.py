@@ -71,52 +71,48 @@ def score_calls(assertions, calls, response, allow_extra_calls=False, *, complet
     if any(not x for x in ids) or len(ids) != len(set(ids)):
         return "missing_evidence", None, {"reason": "Unique call_id required for every observed call"}
     by_id = {c["call_id"]: c for c in calls}
-    evidence, missing = [], False
+    evidence = []
     for raw in assertions:
         rule = ToolAssertion.model_validate(raw)
         call = by_id.get(rule.call_id)
         checks = {}
         if call is None:
             checks["present"] = False if complete else None
-            missing |= not complete
         else:
             checks["name"] = call["name"] == rule.name if "name" in call else None
-            missing |= checks["name"] is None
-            checks["success"] = None if call.get("status") not in ("ok", "error") else call["status"] == "ok"
-            missing |= checks["success"] is None
+            checks["success"] = call["status"] == "ok" if call.get("status") in ("ok", "error") else None
             arguments = call.get("arguments")
-            if not isinstance(arguments, dict) or "output" not in call:
-                missing = True
-            else:
-                checks["arguments"] = all(k in arguments and canonical(arguments[k]) == canonical(v) for k, v in rule.expected_arguments.items())
-                for field, value in (("arguments_schema", arguments), ("result_schema", call["output"])):
-                    schema = getattr(rule, field)
-                    if schema is not None:
-                        checks[field] = Draft202012Validator(schema).is_valid(value)
-                if "expected_output" in raw:
-                    checks["output"] = canonical(call["output"]) == canonical(raw["expected_output"])
-                for dependency in rule.after:
-                    other = by_id.get(dependency)
-                    if not other or "end_ns" not in other or "start_ns" not in call:
-                        missing = True
-                    else:
-                        checks[f"after:{dependency}"] = other["end_ns"] <= call["start_ns"]
-                for i, use in enumerate(rule.usage):
-                    try:
-                        checks[f"usage:{i}"] = canonical(pointer(response, use["actual_path"])) == canonical(pointer(call["output"], use["tool_output_path"]))
-                    except (KeyError, IndexError, TypeError):
-                        missing = True
-        passed = False if False in checks.values() else None if missing or None in checks.values() else True
+            checks["arguments"] = (all(k in arguments and canonical(arguments[k]) == canonical(v)
+                for k, v in rule.expected_arguments.items()) if isinstance(arguments, dict) else None)
+            if rule.arguments_schema is not None:
+                checks["arguments_schema"] = Draft202012Validator(rule.arguments_schema).is_valid(arguments) if isinstance(arguments, dict) else None
+            if rule.result_schema is not None:
+                checks["result_schema"] = Draft202012Validator(rule.result_schema).is_valid(call["output"]) if "output" in call else None
+            if "expected_output" in raw:
+                checks["output"] = canonical(call["output"]) == canonical(raw["expected_output"]) if "output" in call else None
+            # Successful execution requires a captured result, even when no output assertion is set.
+            checks["output_present"] = True if "output" in call else None
+            for dependency in rule.after:
+                other = by_id.get(dependency)
+                checks[f"after:{dependency}"] = (other["end_ns"] <= call["start_ns"]
+                    if other and "end_ns" in other and "start_ns" in call else None)
+            for i, use in enumerate(rule.usage):
+                try:
+                    checks[f"usage:{i}"] = canonical(pointer(response, use["actual_path"])) == canonical(pointer(call["output"], use["tool_output_path"]))
+                except (KeyError, IndexError, TypeError):
+                    checks[f"usage:{i}"] = None
+        passed = False if False in checks.values() else None if None in checks.values() else True
         evidence.append({"call_id": rule.call_id, "checks": checks, "passed": passed})
     if not allow_extra_calls:
         expected = {r["call_id"] for r in assertions}
         evidence.extend({"call_id": key, "checks": {"expected": False}, "passed": False} for key in by_id if key not in expected)
-    # Proven failures remain failures even if another call lacks evidence.
-    if any(row["passed"] is False for row in evidence):
-        # Unknown companion calls do not dilute a proven failure into an accidental pass.
-        return "scored", 0.0 if missing else sum(r["passed"] is True for r in evidence) / len(evidence), {"calls": evidence, "complete": complete, "match_by": match_by}
-    if missing:
-        return "missing_evidence", None, {"calls": evidence, "complete": complete, "match_by": match_by}
-    if not complete:
-        return "missing_evidence", None, {"calls": evidence, "reason": "Observation channel is incomplete"}
-    return "scored", 1.0, {"calls": evidence, "complete": complete, "match_by": match_by}
+    counts = {"passed": sum(r["passed"] is True for r in evidence),
+              "failed": sum(r["passed"] is False for r in evidence),
+              "unknown": sum(r["passed"] is None for r in evidence)}
+    details = {"calls": evidence, "counts": counts, "complete": complete, "match_by": match_by}
+    # Conjunction of required call assertions: a failure cannot be averaged into a pass.
+    if counts["failed"]:
+        return "scored", 0.0, details
+    if counts["unknown"] or not complete:
+        return "missing_evidence", None, details
+    return "scored", 1.0, details

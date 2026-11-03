@@ -40,7 +40,11 @@ def specialty_metrics(specs, selected_results, executions, all_executions, trial
     by_case = defaultdict(list)
     for row in rows:
         by_case[row["case_key"]].append(row["verdict"])
-    repeated = [v for v in by_case.values() if len(v) > 1 and all(x in ("passed", "failed") for x in v)]
+    from collections import Counter
+    planned_by_case = Counter(t.case_id for t in trials)
+    repetitions = max(planned_by_case.values(), default=1)
+    repeated_planned = sum(count > 1 for count in planned_by_case.values())
+    repeated = [v for v in by_case.values() if len(v) == repetitions and repetitions > 1 and all(x in ("passed", "failed") for x in v)]
     totals = []
     for e in executions:
         usage = (e.response or {}).get("usage", {})
@@ -59,7 +63,11 @@ def specialty_metrics(specs, selected_results, executions, all_executions, trial
         "trajectory": {"loop_rate": sum(loops) / len(loops) if loops else None, "loop_samples": len(loops),
             "recovery_rate": sum(recoveries) / len(recoveries) if recoveries else None, "recovery_samples": len(recoveries)},
         "reliability": {"timeout_rate": sum(e.status == "timed_out" for e in all_executions) / len(all_executions) if all_executions else None,
+            "attempt_timeout_rate": sum(e.status == "timed_out" for e in all_executions) / len(all_executions) if all_executions else None,
+            "trial_timeout_rate": sum(e.status == "timed_out" for e in executions) / n if n else None,
             "repeated_run_success": sum(all(x == "passed" for x in v) for v in repeated) / len(repeated) if repeated else None,
+            "repeated_case_planned": repeated_planned,
+            "repeated_case_coverage": len(repeated) / repeated_planned if repeated_planned else None,
             "repeated_case_samples": len(repeated)},
         "usage": {"agent_tokens_per_task": sum(totals) / len(totals) if totals else None,
             "agent_token_coverage": len(totals) / n if n else 0, "cost_per_success": None,
@@ -70,7 +78,7 @@ def specialty_metrics(specs, selected_results, executions, all_executions, trial
 
 def extra_gate(gate, baseline, candidate):
     failed, missing = [], []
-    if min(baseline["scoring_coverage"], candidate["scoring_coverage"]) < gate.get("min_scoring_coverage", 0):
+    if min(baseline.get("trial_scoring_coverage", baseline["scoring_coverage"]), candidate.get("trial_scoring_coverage", candidate["scoring_coverage"])) < gate.get("min_scoring_coverage", 0):
         missing.append("SCORING_COVERAGE_INSUFFICIENT")
     maximum = gate.get("max_p95_latency_ms")
     if maximum is not None:

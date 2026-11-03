@@ -277,6 +277,8 @@ def create_app(settings=None):
                     errors.append({"case_key": case.case_key, "evaluator": spec.instance_id, "code": "INVALID_ASSERTIONS"})
         if errors:
             raise HTTPException(422, detail={"code": "PREFLIGHT_FAILED", "errors": errors[:100]})
+        if profile.definition["execution"].get("tool_faults") and agent.adapter_type not in ("python", "langgraph"):
+            raise HTTPException(422, detail={"code": "FAULT_INJECTION_REQUIRES_CONTROLLED_TOOL_BOUNDARY"})
         if profile.definition.get("environment"):
             if version.effects == "read_only" or profile.definition["execution"].get("max_retries", 0):
                 raise HTTPException(422, detail={"code": "STATEFUL_ENVIRONMENT_REQUIRES_NO_RETRY"})

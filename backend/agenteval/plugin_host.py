@@ -9,6 +9,7 @@ def main():
     payload = json.loads(sys.stdin.read(1_048_577))
     from agenteval.tracing import Recorder, event
     recorder = Recorder()
+    recorder.tool_faults = payload["request"].get("tool_faults", [])
     kind = payload.get("adapter_type", "python")
     try:
         with recorder.span(payload["plugin_id"], "component" if kind == "component" else "agent", payload["request"]["input"], payload["request"].get("traceparent")):

@@ -64,6 +64,7 @@ def report(session, batch):
     selected_results = [{**r.result, "execution_id": r.execution_id} for r in results if r.execution_id in selected_ids]
     specialized = specialty_metrics(batch.grading_manifest.get("evaluators", []), selected_results, executions, all_executions, trials, rows)
     expected_scores = len(all_executions) * len(batch.grading_manifest.get("evaluators", []))
+    expected_trial_scores = len(trials) * len(batch.grading_manifest.get("evaluators", []))
     return {
         "run_id": run.id, "grading_batch_id": batch.id, "grading_status": batch.status,
         "run_status": run.status, "manifest_hash": run.manifest_hash,
@@ -72,6 +73,11 @@ def report(session, batch):
         "decision_coverage": (p + f) / n if n else 0,
         "confirmed_success_fraction": p / n if n else 0,
         "scoring_coverage": sum(r.result["grading_status"] == "scored" for r in results) / expected_scores if expected_scores else 0,
+        "attempt_scoring_coverage": sum(r.result["grading_status"] == "scored" for r in results) / expected_scores if expected_scores else 0,
+        "trial_scoring_coverage": sum(r["grading_status"] == "scored" for r in selected_results) / expected_trial_scores if expected_trial_scores else 0,
+        "metric_definitions": {"scoring_coverage": "attempt_scoring_coverage (legacy alias)", "attempt_scoring_coverage": "scored results / (all attempts * evaluator instances)",
+                               "trial_scoring_coverage": "canonical scored results / (planned trials * evaluator instances)",
+                               "success_rate": "passed trials / decided trials; unknown and excluded remain in decision coverage"},
         "latency_ms": {"p50": nearest_rank(latencies, .5), "p95": nearest_rank(latencies, .95), "samples": len(latencies)},
         "execution_counts": dict(Counter(e.status for e in all_executions)), "trials": rows,
         "attempts": len(all_executions), "retry_rate": len({e.trial_id for e in all_executions if e.attempt_index > 0}) / n if n else 0,

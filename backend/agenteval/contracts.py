@@ -112,11 +112,27 @@ class EvaluatorSpec(Contract):
         return self
 
 
+class ToolFault(Contract):
+    tool_name: str = Field(min_length=1)
+    call_index: int = Field(default=1, ge=1)
+    mode: Literal["mock", "error", "timeout"]
+    mock_output: Any = None
+    delay_seconds: float = Field(default=0, ge=0, le=300)
+
+
 class ExecutionPolicy(Contract):
     repetitions: int = Field(default=1, ge=1, le=10)
     timeout_seconds: float = Field(default=30, gt=0, le=300)
     max_concurrency: int = Field(default=4, ge=1, le=16)
     max_retries: int = Field(default=0, ge=0, le=2)
+    tool_faults: list[ToolFault] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def unique_faults(self):
+        keys = [(x.tool_name, x.call_index) for x in self.tool_faults]
+        if len(set(keys)) != len(keys):
+            raise ValueError("Duplicate tool fault target")
+        return self
 
 
 class Gate(Contract):

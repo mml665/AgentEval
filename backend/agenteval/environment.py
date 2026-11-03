@@ -56,20 +56,26 @@ class RefundEnvironment:
 ENVIRONMENTS = {"sqlite.refund.v1": RefundEnvironment}
 
 
-def collect(adapter, allow_reset):
+def collect(adapter, allow_reset, persist=None):
     evidence = {"source": "independent_environment_adapter", "observed_at_ns": time.time_ns()}
     try:
         state = adapter.observe()
         evidence.update(status="observed", state=state, state_hash=digest(state))
     except Exception as exc:
         evidence.update(status="unavailable", error_code=type(exc).__name__)
-    evidence["reset_status"] = "deferred_unknown_effect"
-    if allow_reset:
+    evidence["reset_status"] = "pending" if allow_reset else "deferred_unknown_effect"
+    # Persist-before-reset is mandatory. A failed commit leaves the environment intact.
+    from copy import deepcopy
+    committed = persist(deepcopy(evidence)) if persist else False
+    if allow_reset and committed and evidence["status"] == "observed":
         try:
             adapter.reset()
             evidence["reset_status"] = "verified"
         except Exception as exc:
             evidence.update(reset_status="failed", reset_error_code=type(exc).__name__)
+        persist(deepcopy(evidence))
+    elif allow_reset and not committed:
+        evidence["reset_status"] = "deferred_uncommitted_snapshot"
     return evidence
 
 

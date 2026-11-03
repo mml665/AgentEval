@@ -114,7 +114,19 @@ def record_tool(name, arguments, operation, call_id):
         call = {"call_id": call_id, "name": name, "arguments": arguments,
                 "span_id": f"{span.get_span_context().span_id:016x}", "start_ns": started}
         try:
-            output = operation(**arguments)
+            occurrence = sum(c["name"] == name for c in recorder.calls) + 1
+            fault = next((f for f in getattr(recorder, "tool_faults", []) if f["tool_name"] == name and f.get("call_index", 1) == occurrence), None)
+            if fault:
+                call["fault_injection"] = {"source": "platform_profile", "mode": fault["mode"]}
+                event("tool.fault_injection", call["fault_injection"])
+                time.sleep(fault.get("delay_seconds", 0))
+                if fault["mode"] == "error":
+                    raise RuntimeError("Injected tool failure")
+                if fault["mode"] == "timeout":
+                    raise TimeoutError("Injected tool timeout")
+                output = fault.get("mock_output")
+            else:
+                output = operation(**arguments)
             call.update(output=output, status="ok")
             event("output", output)
             return output, call

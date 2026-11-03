@@ -127,6 +127,7 @@ class Coordinator:
             request = {"run_id": run.id, "trial_id": trial.id, "execution_id": execution.id,
                        "session_id": execution.id, "input": case.definition["input"],
                        "case_key": case.case_key, "trace_enabled": True}
+            request["tool_faults"] = run.manifest["profile"]["execution"].get("tool_faults", [])
         started = time.monotonic()
         response, error, status = None, None, "outcome_unknown"
         def on_span(row):
@@ -192,12 +193,26 @@ class Coordinator:
             response["trace_completeness"] = capture.get("completeness", "unavailable")
             response["trace_spans"] = capture.get("spans", [])
         environment_evidence = None
+        invocation_latency = (time.monotonic() - started) * 1000
         if environment:
             from agenteval.environment import collect
             # Unknown remote effects retain their isolated state; reset only after confirmed completion.
             safe = status in ("completed", "agent_failed") and not lost.is_set()
-            environment_evidence = await asyncio.to_thread(collect, environment, safe)
-        self.finish(item_id, owner, epoch, status, response, error, (time.monotonic() - started) * 1000, capture, environment_evidence)
+            def checkpoint(value):
+                with self.locked(item.project_id) as session:
+                    current = session.get(WorkItem, item_id)
+                    if not self.fenced(current, owner, epoch):
+                        return False
+                    observed = session.get(Execution, execution.id)
+                    observed.environment_evidence = {**value, "execution_outcome": status}
+                    observed.response, observed.error = response, error
+                    from agenteval.provenance import describe
+                    observed.evidence_provenance = describe(response, value)
+                    session.add(AuditEvent(run_id=run.id, action="ENVIRONMENT_CHECKPOINT", detail={
+                        "execution_id": execution.id, "state_hash": value.get("state_hash"), "reset_status": value["reset_status"]}))
+                return True
+            environment_evidence = await asyncio.to_thread(collect, environment, safe, checkpoint)
+        self.finish(item_id, owner, epoch, status, response, error, invocation_latency, capture, environment_evidence)
 
     def finish(self, item_id, owner, epoch, status, response=None, error=None, latency=None, trace_capture=None, environment_evidence=None):
         with self.locked(self.project(item_id)) as session:
@@ -208,7 +223,12 @@ class Coordinator:
                 session.add(AuditEvent(run_id=item.run_id, action="STALE_RESULT_REJECTED", detail={"work_id": item.id, "epoch": epoch}))
                 return False
             execution.status, execution.response, execution.error = status, response, error
-            execution.environment_evidence = environment_evidence
+            if environment_evidence is not None:
+                execution.environment_evidence = environment_evidence
+            from agenteval.provenance import describe
+            execution.evidence_provenance = describe(response, execution.environment_evidence)
+            if run_faults := session.get(Run, item.run_id).manifest["profile"]["execution"].get("tool_faults"):
+                execution.evidence_provenance = {**execution.evidence_provenance, "fault_injection": {"source": "platform_profile", "rules": run_faults}}
             if trace_capture and trace_capture.get("spans"):
                 execution.trace_id = trace_capture["trace_id"]
                 execution.trace_completeness = trace_capture.get("completeness", "partial")
@@ -273,6 +293,7 @@ class Coordinator:
                     value = judge(spec, case, execution.response or {}, judge_settings, self, item_id, owner, epoch, batch.id, execution.id)
                 else:
                     value = evaluate(spec, case, execution.response or {}, environment_evidence=execution.environment_evidence)
+                value["evidence_provenance"] = execution.evidence_provenance or {"source": "legacy_unclassified"}
                 with self.locked(item.project_id) as session:
                     current = session.get(WorkItem, item_id)
                     if not self.fenced(current, owner, epoch):

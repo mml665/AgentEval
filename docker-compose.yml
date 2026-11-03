@@ -25,7 +25,7 @@ services:
   api:
     build: .
     ports:
-      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:${AGENTEVAL_API_PORT:-8000}:8000"
     environment: &runtime
       AGENTEVAL_API_TOKEN: ${AGENTEVAL_API_TOKEN:?Set AGENTEVAL_API_TOKEN in .env}
       AGENTEVAL_DATABASE_URL: postgresql+psycopg://agenteval:${POSTGRES_PASSWORD}@db:5432/agenteval
