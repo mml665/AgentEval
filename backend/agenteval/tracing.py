@@ -61,8 +61,11 @@ class Recorder:
         self.provider.add_span_processor(SimpleSpanProcessor(self.exporter))
         if os.getenv("AGENTEVAL_STREAM_TRACE") == "1":
             self.provider.add_span_processor(IPCProcessor())
-        self.tracer = self.provider.get_tracer("agenteval", "0.4.0")
+        from agenteval import __version__
+        self.tracer = self.provider.get_tracer("agenteval", __version__)
         self.calls = []
+        self.call_counts = {}
+        self.call_lock = threading.Lock()
 
     @contextmanager
     def span(self, name, kind, input=None, traceparent=None):
@@ -108,13 +111,17 @@ def record_tool(name, arguments, operation, call_id):
     recorder = active_recorder.get()
     if recorder is None:
         return operation(**arguments), None
+    # Assign ordinals at invocation start, never from completed calls: parallel
+    # calls can finish out of order or recursively invoke the same tool.
+    with recorder.call_lock:
+        occurrence = recorder.call_counts.get(name, 0) + 1
+        recorder.call_counts[name] = occurrence
     with recorder.span(name, "tool", arguments) as span:
         span.set_attribute("tool.call_id", call_id)
         started = time.time_ns()
-        call = {"call_id": call_id, "name": name, "arguments": arguments,
+        call = {"call_id": call_id, "name": name, "arguments": arguments, "call_index": occurrence,
                 "span_id": f"{span.get_span_context().span_id:016x}", "start_ns": started}
         try:
-            occurrence = sum(c["name"] == name for c in recorder.calls) + 1
             fault = next((f for f in getattr(recorder, "tool_faults", []) if f["tool_name"] == name and f.get("call_index", 1) == occurrence), None)
             if fault:
                 call["fault_injection"] = {"source": "platform_profile", "mode": fault["mode"]}
@@ -135,7 +142,8 @@ def record_tool(name, arguments, operation, call_id):
             raise
         finally:
             call["end_ns"] = time.time_ns()
-            recorder.calls.append(call)
+            with recorder.call_lock:
+                recorder.calls.append(call)
 
 
 def event(name, value):

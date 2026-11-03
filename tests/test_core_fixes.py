@@ -43,7 +43,8 @@ def test_failed_snapshot_commit_must_not_reset():
     assert collect(Adapter(), True)["reset_status"] == "deferred_uncommitted_snapshot"
 
 
-def test_real_process_crash_after_checkpoint_keeps_terminal_snapshot(tmp_path):
+@pytest.mark.parametrize("crash_after_reset", [False, True])
+def test_real_process_crash_after_checkpoint_keeps_terminal_snapshot(tmp_path, crash_after_reset):
     script = r'''
 import os,sqlite3,sys
 from pathlib import Path
@@ -55,21 +56,29 @@ from agenteval.db import Base
 from agenteval.environment import RefundEnvironment
 from examples.v05_demo import create_demo
 root=Path(sys.argv[1])
-def crash(self): os._exit(77)
+original_reset = RefundEnvironment.reset
+def crash(self):
+ if sys.argv[2] == 'after': original_reset(self)
+ (root/'crashed_namespace.txt').write_text(self.path.name)
+ os._exit(77)
 RefundEnvironment.reset=crash
 app=create_app(Settings(database_url='sqlite:///'+(root/'eval.db').as_posix(),api_token='test-token-for-crash-only',environment_root=str(root/'env')))
 Base.metadata.create_all(app.state.engine)
 with TestClient(app,headers={'Authorization':'Bearer test-token-for-crash-only'}) as client: create_demo(client)
 '''
-    result = subprocess.run([sys.executable, "-c", script, str(tmp_path)], timeout=30)
+    result = subprocess.run([sys.executable, "-c", script, str(tmp_path), "after" if crash_after_reset else "before"], timeout=30)
     assert result.returncode == 77
+    crashed_namespace = (tmp_path / "crashed_namespace.txt").read_text()
     with sqlite3.connect(tmp_path / "eval.db") as db:
-        row = db.execute("SELECT environment_evidence,response,evidence_provenance FROM case_executions WHERE environment_evidence IS NOT NULL").fetchone()
+        row = db.execute("SELECT environment_evidence,response,evidence_provenance FROM case_executions WHERE id=?", (Path(crashed_namespace).stem,)).fetchone()
         state, response, provenance = map(json.loads, row)
         assert state["reset_status"] == "pending" and state["execution_outcome"] == "completed"
         assert state["state"]["refunds"] and response["output"]["status"] == "requested"
         assert provenance["environment"]["independent"] is True
         db.execute("UPDATE work_items SET lease_until=0 WHERE status='running'"); db.commit()
+    if crash_after_reset:
+        with sqlite3.connect(tmp_path / "env" / crashed_namespace) as fixture:
+            assert fixture.execute("SELECT COUNT(*) FROM refunds").fetchone()[0] == 0
     from agenteval.config import Settings
     from agenteval.db import make_database, Execution
     from agenteval.durable import Coordinator
@@ -77,7 +86,7 @@ with TestClient(app,headers={'Authorization':'Bearer test-token-for-crash-only'}
     engine, sessions = make_database('sqlite:///' + (tmp_path / 'eval.db').as_posix())
     Coordinator(sessions, Settings()).recover()
     with sessions() as session:
-        execution = session.scalar(select(Execution).where(Execution.environment_evidence.is_not(None)))
+        execution = session.get(Execution, Path(crashed_namespace).stem)
         assert execution.environment_evidence["state"] == state["state"]
         assert execution.status == "outcome_unknown"
     engine.dispose()

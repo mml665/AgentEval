@@ -2,11 +2,12 @@
 
 面向异构 Agent 的自动化评测与回归分析平台。
 
-**当前版本：0.5.1。** 在 0.4 执行与 Trace 闭环上，新增独立环境状态验证、轨迹规则、工具证据与 ID 映射、评分器三层元数据、专项指标及性能门禁、Judge 标签校准流程、独立 FTS5 Retriever / TF-IDF Reranker 与 HTTP 接入。真实业务 Agent 的通用性、实际模型校准和完整生产验收仍待验证。
+**当前版本：0.5.2。** 在 0.4 执行与 Trace 闭环上，新增独立环境状态验证、轨迹规则、工具证据与 ID 映射、评分器三层元数据、专项指标及性能门禁、Judge 标签校准流程、独立 FTS5 Retriever / TF-IDF Reranker 与 HTTP 接入。真实业务 Agent 的通用性、实际模型校准和完整生产验收仍待验证。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
 - [实际构建状态、限制与验证记录](docs/BUILD_STATUS.md)
+- [0.5.2 证据与恢复边界](docs/V0.5.2_HARDENING.md)
 - [0.5.1 核心修复与待验收项](docs/V0.5.1_CORE_ACCEPTANCE.md)
 - [0.5 使用契约与验收边界](docs/V0.5_ACCEPTANCE.md)
 

@@ -57,7 +57,8 @@ def specialty_metrics(specs, selected_results, executions, all_executions, trial
     return {"granularities": grains, "state": {"success_rate": sum(all(v) for v in state_by_execution.values()) / len(state_by_execution) if state_by_execution else None,
         "coverage": state_coverage, "scored": len(state),
         "validation_scope": "independent_state" if n and state_coverage == 1 else "partial_state" if any(e["evaluator_id"] == "state_assertion" for e in evaluators) else "output_only",
-        "reset_failures": sum((e.environment_evidence or {}).get("reset_status") == "failed" for e in all_executions)},
+        "reset_failures": sum((e.environment_evidence or {}).get("reset_status") == "failed" for e in all_executions),
+        "reset_unconfirmed": sum(bool(e.environment_evidence) and e.environment_evidence.get("reset_status") != "verified" for e in all_executions)},
         "tool": {"error_rate": errors / len(valid_calls) if valid_calls else None, "samples": len(valid_calls),
             "coverage": len(tool_executions) / n if n else 0, "status_coverage": len(valid_calls) / len(calls) if calls else None},
         "trajectory": {"loop_rate": sum(loops) / len(loops) if loops else None, "loop_samples": len(loops),
@@ -96,4 +97,6 @@ def extra_gate(gate, baseline, candidate):
             failed.append("TOOL_ERROR_RATE_THRESHOLD")
     if candidate["specialty_metrics"]["state"]["reset_failures"]:
         missing.append("ENVIRONMENT_RESET_FAILED")
+    if candidate["specialty_metrics"]["state"].get("reset_unconfirmed", 0):
+        missing.append("ENVIRONMENT_RESET_UNCONFIRMED")
     return failed, missing

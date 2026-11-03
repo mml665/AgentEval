@@ -93,7 +93,7 @@ def compare(session, baseline_batch, candidate_batch, mode):
     for name in ("benchmark", "environment"):
         if baseline.manifest[name] != candidate.manifest[name]:
             differences.append(name)
-    for name in ("evaluators", "execution", "gate", "judge", "engine_version"):
+    for name in ("evaluators", "execution", "gate", "judge", "engine_version", "environment"):
         if baseline_batch.grading_manifest.get(name) != candidate_batch.grading_manifest.get(name):
             differences.append(name)
     b, c = report(session, baseline_batch), report(session, candidate_batch)

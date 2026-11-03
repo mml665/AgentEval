@@ -82,6 +82,8 @@ def collect(adapter, allow_reset, persist=None):
 def score_state(assertions, evidence):
     if not evidence or evidence.get("status") != "observed":
         return "missing_evidence", None, {"reason": "Independent environment snapshot unavailable"}
+    if evidence.get("source") != "independent_environment_adapter" or evidence.get("state_hash") != digest(evidence.get("state")):
+        return "evaluator_error", None, {"reason": "Environment snapshot source or integrity check failed"}
     checks = []
     for check in StateAssertions.model_validate(assertions).checks:
         try:
