@@ -46,7 +46,7 @@ def test_failed_snapshot_commit_must_not_reset():
 @pytest.mark.parametrize("crash_after_reset", [False, True])
 def test_real_process_crash_after_checkpoint_keeps_terminal_snapshot(tmp_path, crash_after_reset):
     script = r'''
-import os,sqlite3,sys
+import os,sqlite3,sys,threading
 from pathlib import Path
 sys.path[:0]=['backend','.']
 from fastapi.testclient import TestClient
@@ -57,10 +57,12 @@ from agenteval.environment import RefundEnvironment
 from examples.v05_demo import create_demo
 root=Path(sys.argv[1])
 original_reset = RefundEnvironment.reset
+crash_lock = threading.Lock()
 def crash(self):
- if sys.argv[2] == 'after': original_reset(self)
- (root/'crashed_namespace.txt').write_text(self.path.name)
- os._exit(77)
+ with crash_lock:
+  if sys.argv[2] == 'after': original_reset(self)
+  (root/'crashed_namespace.txt').write_text(self.path.name)
+  os._exit(77)
 RefundEnvironment.reset=crash
 app=create_app(Settings(database_url='sqlite:///'+(root/'eval.db').as_posix(),api_token='test-token-for-crash-only',environment_root=str(root/'env')))
 Base.metadata.create_all(app.state.engine)
