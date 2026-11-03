@@ -46,6 +46,7 @@ class AgentVersion(Entity):
     configuration: Mapped[dict] = mapped_column(JSON)
     capabilities: Mapped[list] = mapped_column(JSON)
     content_hash: Mapped[str]
+    effects: Mapped[str] = mapped_column(default="unknown", server_default="unknown")
 
 
 class Benchmark(Entity):
@@ -112,6 +113,7 @@ class Execution(Entity):
     error: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     latency_ms: Mapped[float | None] = mapped_column(nullable=True)
     trace_id: Mapped[str] = mapped_column(default=uid, index=True)
+    late_result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class GradingBatch(Entity):
@@ -154,6 +156,46 @@ class RequestDedup(Entity):
     key_hash: Mapped[str]
     request_hash: Mapped[str]
     run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"))
+
+
+class WorkItem(Entity):
+    """Transactional outbox and fenced work lease; queue payload contains only id."""
+    __tablename__ = "work_items"
+    __table_args__ = (UniqueConstraint("kind", "target_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"), index=True)
+    kind: Mapped[str]
+    target_id: Mapped[str]
+    status: Mapped[str] = mapped_column(default="pending", index=True)
+    owner: Mapped[str | None] = mapped_column(nullable=True)
+    epoch: Mapped[int] = mapped_column(default=0)
+    lease_until: Mapped[float] = mapped_column(default=0)
+    next_delivery: Mapped[float] = mapped_column(default=0, index=True)
+    delivery_count: Mapped[int] = mapped_column(default=0)
+    last_error: Mapped[str | None] = mapped_column(nullable=True)
+
+
+class AuditEvent(Entity):
+    __tablename__ = "audit_events"
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"), index=True)
+    action: Mapped[str]
+    detail: Mapped[dict] = mapped_column(JSON)
+
+
+class JudgeCall(Entity):
+    __tablename__ = "judge_calls"
+    __table_args__ = (UniqueConstraint("batch_id", "execution_id", "instance_id", "attempt_index"),)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("grading_batches.id"), index=True)
+    execution_id: Mapped[str] = mapped_column(ForeignKey("case_executions.id"))
+    instance_id: Mapped[str]
+    attempt_index: Mapped[int]
+    status: Mapped[str]
+    model: Mapped[str]
+    prompt_version: Mapped[str]
+    input_hash: Mapped[str]
+    response_hash: Mapped[str | None] = mapped_column(nullable=True)
+    usage: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    result: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 def make_database(url: str):

@@ -5,6 +5,9 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  JUDGE_NOT_CONFIGURED: '服务端尚未配置 Judge 接口和模型，请先设置裁判环境变量。',
+  JUDGE_BUDGET_EXCEEDED: '计划的 Judge 调用数超过单 Run 预算。',
+  RETRY_REQUIRES_READ_ONLY: '自动重试仅适用于显式声明为只读的 Agent 版本。',
   RESOURCE_CONFLICT: '该名称或版本已存在，请使用新的版本号。',
   UNAUTHORIZED: '访问令牌无效，请重新连接。',
   INCOMPARABLE: '两个运行的评测条件不一致，无法严格比较。可选择探索模式查看差异。',

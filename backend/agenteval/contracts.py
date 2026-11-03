@@ -37,12 +37,13 @@ class Named(Contract):
 
 class AgentCreate(Named):
     project_id: str
-    adapter_type: Literal["http", "python"]
+    adapter_type: Literal["http", "python", "langgraph"]
 
 
 class AgentVersionCreate(Contract):
     version: str = Field(min_length=1, max_length=64)
     configuration: dict[str, Any]
+    effects: Literal["unknown", "read_only"] = "unknown"
     capabilities: list[Literal["tool_calls", "workflow_steps", "retrieval_results", "final_state"]] = []
 
 
@@ -70,7 +71,7 @@ class BenchmarkVersionCreate(Contract):
         return self
 
 
-EvaluatorID = Literal["exact_match", "json_schema", "tool_selection", "tool_arguments", "trajectory", "rag"]
+EvaluatorID = Literal["exact_match", "json_schema", "tool_selection", "tool_arguments", "trajectory", "rag", "llm_judge"]
 
 
 class EvaluatorSpec(Contract):
@@ -95,7 +96,7 @@ class ExecutionPolicy(Contract):
     repetitions: int = Field(default=1, ge=1, le=10)
     timeout_seconds: float = Field(default=30, gt=0, le=300)
     max_concurrency: int = Field(default=4, ge=1, le=16)
-    max_retries: Literal[0] = 0
+    max_retries: int = Field(default=0, ge=0, le=2)
 
 
 class Gate(Contract):
@@ -132,6 +133,10 @@ class CompareCreate(Contract):
     baseline_batch_id: str
     candidate_batch_id: str
     mode: Literal["strict", "exploratory"] = "strict"
+
+
+class ReleaseCapacity(Contract):
+    reason: str = Field(min_length=10, max_length=2000)
 
 
 def nearest_rank(values: list[float], quantile: float) -> float | None:

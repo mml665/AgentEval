@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from agenteval.plugins import PLUGINS
+from agenteval.plugins import GRAPH_PLUGINS, PLUGINS
 
 MAX_OUTPUT_BYTES = 1_048_576
 
@@ -17,8 +17,12 @@ class AgentFailure(Exception):
 
 
 def validate_agent_config(adapter_type, configuration, settings):
-    if adapter_type == "python":
-        if set(configuration) != {"plugin_id"} or configuration["plugin_id"] not in PLUGINS:
+    if adapter_type in ("python", "langgraph"):
+        registry = PLUGINS
+        if adapter_type == "langgraph":
+            # Do not import the framework in every API / ordinary Python process.
+            registry = GRAPH_PLUGINS
+        if set(configuration) != {"plugin_id"} or configuration["plugin_id"] not in registry:
             raise ValueError("Only deployment-registered plugin_id values are supported")
     else:
         if set(configuration) != {"endpoint"}:
@@ -48,7 +52,7 @@ async def bounded_read(stream):
 
 async def invoke(adapter_type, configuration, request, timeout, settings):
     validate_agent_config(adapter_type, configuration, settings)
-    if adapter_type == "python":
+    if adapter_type in ("python", "langgraph"):
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "agenteval.plugin_host",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
@@ -57,7 +61,7 @@ async def invoke(adapter_type, configuration, request, timeout, settings):
         )
         try:
             async with asyncio.timeout(timeout):
-                process.stdin.write(json.dumps({"plugin_id": configuration["plugin_id"], "request": request}).encode())
+                process.stdin.write(json.dumps({"adapter_type": adapter_type, "plugin_id": configuration["plugin_id"], "request": request}).encode())
                 await process.stdin.drain()
                 process.stdin.close()
                 raw = await bounded_read(process.stdout)

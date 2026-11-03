@@ -31,3 +31,6 @@ def slow_agent(request):
 PLUGINS = {"example.order.v1": order_agent, "example.order.v2": order_agent_regressed,
            "example.slow": slow_agent}
 
+# Deployment-owned factory names; requests may select IDs, never module paths.
+GRAPH_PLUGINS = {"example.order.graph": "order_graph"}
+

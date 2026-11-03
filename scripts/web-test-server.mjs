@@ -10,7 +10,7 @@ mkdirSync(path.join(root, '.build'), { recursive: true });
 const venv = path.join(root, '.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
 const python = process.env.AGENTEVAL_TEST_PYTHON || (existsSync(venv) ? venv : 'python');
 const db = path.join(root, '.build', `web-test-${randomUUID()}.db`).replaceAll('\\', '/');
-const env = { ...process.env, PYTHONPATH: path.join(root, 'backend'), AGENTEVAL_DATABASE_URL: `sqlite:///${db}`, AGENTEVAL_API_TOKEN: 'local-browser-test-token-only' };
+const env = { ...process.env, PYTHONPATH: path.join(root, 'backend'), AGENTEVAL_DATABASE_URL: `sqlite:///${db}`, AGENTEVAL_API_TOKEN: 'local-browser-test-token-only', AGENTEVAL_EXECUTION_MODE: 'local', AGENTEVAL_JUDGE_ENDPOINT: '', AGENTEVAL_JUDGE_MODEL: '', AGENTEVAL_JUDGE_API_KEY: '' };
 const migration = spawnSync(python, ['-m', 'agenteval', 'init-db'], { cwd: root, env, stdio: 'inherit', windowsHide: true });
 if (migration.status !== 0) process.exit(migration.status || 1);
 const server = spawn(python, ['-m', 'agenteval', 'serve', '--port', process.env.AGENTEVAL_WEB_TEST_PORT || '8127'], { cwd: root, env, stdio: 'inherit', windowsHide: true });

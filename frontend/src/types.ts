@@ -17,3 +17,5 @@ export interface Score extends Entity { execution_id: string; instance_id: strin
 export interface Comparison extends Entity { report: { baseline_batch_id: string; candidate_batch_id: string; mode: string; compatible: boolean; differences: string[]; baseline: Report; candidate: Report; success_rate_delta: number | null; new_failures: string[]; fixed_cases: string[]; uncertain_cases: string[]; gate: { status: string; reasons: string[] } } }
 export interface Page<T> { items: T[]; total?: number; offset?: number; limit?: number }
 
+
+export interface WorkItem extends Entity { kind: string; target_id: string; status: string; epoch: number; delivery_count: number; last_error: string | null; lease_until: number }

@@ -33,7 +33,7 @@ test('login rejects invalid token, then completes real evaluation, evidence and 
   await page.getByRole('button', { name: 'Order Assistant · v2.0', exact: true }).click();
   await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
   await page.getByLabel('用例结果筛选').selectOption('bad');
-  await expect(page.locator('tbody tr')).toHaveCount(1);
+  await expect(page.locator('section.panel').filter({ has: page.getByRole('heading', { name: '用例执行结果' }) }).locator('tbody tr')).toHaveCount(1);
   await page.getByRole('button', { name: '查看证据' }).click();
   await expect(page.getByRole('dialog')).toContainText('get_order');
   await expect(page.getByRole('dialog')).toContainText('processing');
@@ -62,9 +62,11 @@ test('manual configuration publishes agent, benchmark, profile and runs from UI'
   await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
   await page.getByRole('button', { name: '注册 Agent', exact: true }).click();
   await modal.getByLabel('Agent 名称').fill('手动 Order Agent');
+  await modal.getByLabel('接入方式').selectOption('langgraph');
   await modal.getByRole('button', { name: '注册 Agent' }).click();
   await page.getByRole('button', { name: '发布版本', exact: true }).click();
   await modal.getByLabel('版本号').fill('1.0');
+  await modal.getByLabel('执行副作用').selectOption('read_only');
   await modal.getByLabel('工具调用与参数').check();
   await modal.getByLabel('工作流步骤').check();
   await modal.getByLabel('检索结果排序').check();
@@ -91,6 +93,7 @@ test('manual configuration publishes agent, benchmark, profile and runs from UI'
   await modal.getByRole('button', { name: '开始评测' }).click();
   await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
   await expect(page.locator('.metric-card').filter({ hasText: '任务成功率' }).locator('strong')).toHaveText('100%');
+  await expect(page.getByRole('heading', { name: '投递与执行保护' })).toBeVisible();
 });
 
 test('mobile login, navigation, empty states and dialogs fit viewport', async ({ page }) => {

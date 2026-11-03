@@ -1,4 +1,14 @@
 services:
+  redis:
+    image: redis:7
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
   db:
     image: postgres:16
     environment:
@@ -16,18 +26,45 @@ services:
     build: .
     ports:
       - "127.0.0.1:8000:8000"
-    environment:
+    environment: &runtime
       AGENTEVAL_API_TOKEN: ${AGENTEVAL_API_TOKEN:?Set AGENTEVAL_API_TOKEN in .env}
       AGENTEVAL_DATABASE_URL: postgresql+psycopg://agenteval:${POSTGRES_PASSWORD}@db:5432/agenteval
       AGENTEVAL_HTTP_ALLOWLIST: ${AGENTEVAL_HTTP_ALLOWLIST:-}
+      AGENTEVAL_EXECUTION_MODE: celery
+      AGENTEVAL_BROKER_URL: redis://redis:6379/0
+      AGENTEVAL_PROJECT_CONCURRENCY: ${AGENTEVAL_PROJECT_CONCURRENCY:-8}
+      AGENTEVAL_ADMIN_TOKEN: ${AGENTEVAL_ADMIN_TOKEN:-}
+      AGENTEVAL_JUDGE_ENDPOINT: ${AGENTEVAL_JUDGE_ENDPOINT:-}
+      AGENTEVAL_JUDGE_MODEL: ${AGENTEVAL_JUDGE_MODEL:-}
+      AGENTEVAL_JUDGE_API_KEY: ${AGENTEVAL_JUDGE_API_KEY:-}
+      AGENTEVAL_JUDGE_MAX_CALLS: ${AGENTEVAL_JUDGE_MAX_CALLS:-100}
     depends_on:
       db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)"]
       interval: 10s
       timeout: 3s
       retries: 5
+  worker:
+    build: .
+    environment: *runtime
+    command: ["python", "-m", "agenteval", "worker"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  dispatcher:
+    build: .
+    environment: *runtime
+    command: ["python", "-m", "agenteval", "dispatch"]
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
 volumes:
   postgres-data:
+  redis-data:
 

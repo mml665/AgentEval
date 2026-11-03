@@ -46,6 +46,12 @@ jobs:
   postgres:
     runs-on: ubuntu-latest
     services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 10
       postgres:
         image: postgres:16
         env:
@@ -59,6 +65,8 @@ jobs:
     env:
       PYTHONPATH: backend
       AGENTEVAL_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
+      AGENTEVAL_QUEUE_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
+      AGENTEVAL_TEST_BROKER_URL: redis://127.0.0.1:6379/0
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -67,4 +75,5 @@ jobs:
       - run: python -m pip install -r requirements.lock
       - run: python -m agenteval init-db
       - run: python -m agenteval init-db
+      - run: python scripts/queue_smoke.py
 

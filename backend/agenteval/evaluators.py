@@ -8,7 +8,7 @@ from agenteval.contracts import EvaluatorSpec, canonical, pointer
 
 CAPABILITIES = {
     "exact_match": None, "json_schema": None, "tool_selection": "tool_calls",
-    "tool_arguments": "tool_calls", "trajectory": "workflow_steps", "rag": "retrieval_results",
+    "tool_arguments": "tool_calls", "trajectory": "workflow_steps", "rag": "retrieval_results", "llm_judge": None,
 }
 
 
@@ -17,10 +17,17 @@ def validate_config(spec):
         "exact_match": {"actual_path", "expected_path"},
         "json_schema": {"actual_path", "schema"},
         "tool_selection": {"forbidden"}, "tool_arguments": set(),
-        "trajectory": set(), "rag": {"metric", "k"},
+        "trajectory": set(), "rag": {"metric", "k"}, "llm_judge": {"rubric", "timeout_seconds"},
     }[spec.id]
     if set(spec.config) - allowed:
         raise ValueError(f"Unknown configuration keys for {spec.id}")
+    if spec.id == "llm_judge":
+        rubric = spec.config.get("rubric")
+        if not isinstance(rubric, str) or not 1 <= len(rubric) <= 4000:
+            raise ValueError("Judge requires a rubric of 1-4000 characters")
+        timeout = spec.config.get("timeout_seconds", 15)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout <= 60:
+            raise ValueError("Judge timeout must be between 0 and 60 seconds")
     for name in ("actual_path", "expected_path"):
         if name in spec.config and (not isinstance(spec.config[name], str) or
                                    not spec.config[name].startswith("/")):
@@ -113,6 +120,8 @@ def evaluate(spec: EvaluatorSpec, case: dict, response: dict) -> dict:
 
 
 def _evaluate(spec, case, response):
+    if spec.id == "llm_judge":
+        return result(spec, "missing_evidence", explanation="Agent execution did not produce a gradable result")
     assertions = case.get("assertions", {})
     capability = CAPABILITIES[spec.id]
     if capability:

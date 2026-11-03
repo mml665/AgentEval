@@ -1,5 +1,8 @@
+import asyncio
+import time
 import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
@@ -21,6 +24,9 @@ from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comp
 from agenteval.evaluators import CAPABILITIES, validate_case
 from agenteval.limits import RequestLimit
 from agenteval.service import LocalRunner, compare, records, report, snapshot
+from agenteval.durable import Coordinator, enqueue
+from agenteval.db import WorkItem, AuditEvent, JudgeCall
+from agenteval.contracts import ReleaseCapacity
 
 
 def serialize(entity):
@@ -36,28 +42,29 @@ def create_app(settings=None):
     async def lifespan(app):
         if len(settings.api_token) < 16:
             raise RuntimeError("Set AGENTEVAL_API_TOKEN to a random token of at least 16 characters")
-        # The M1 coordinator cannot safely resume remote calls after a process crash.
-        with sessions() as session:
-            for run in session.scalars(select(Run).where(Run.status.in_(
-                    ["pending", "running", "evaluating", "cancelling"]))):
-                for trial in records(session, Trial, run_id=run.id):
-                    for execution in records(session, Execution, trial_id=trial.id):
-                        if execution.status == "invoking":
-                            execution.status = "outcome_unknown"
-                            execution.error = {"code": "COORDINATOR_INTERRUPTED"}
-                        elif execution.status == "pending":
-                            execution.status = "infrastructure_failed"
-                            execution.error = {"code": "NOT_DISPATCHED_BEFORE_RESTART"}
-                for batch in records(session, GradingBatch, run_id=run.id):
-                    if batch.status != "completed":
-                        batch.status = "failed"
-                run.status = "failed"
-            session.commit()
-        yield
-        engine.dispose()
+        coordinator = runner.coordinator
+        async def maintain():
+            while True:
+                await asyncio.to_thread(coordinator.recover)
+                if settings.execution_mode == "local":
+                    # Direct creation handles fresh jobs; maintenance resumes older work.
+                    with sessions() as session:
+                        ids = list(session.scalars(select(WorkItem.id).where(
+                            WorkItem.status.in_(["pending", "published"]),
+                            WorkItem.created_at < datetime.fromtimestamp(time.time() - 2, timezone.utc))))
+                    if ids:
+                        await coordinator.drain()
+                await asyncio.sleep(1)
+        maintenance = asyncio.create_task(maintain())
+        try:
+            yield
+        finally:
+            maintenance.cancel()
+            await asyncio.gather(maintenance, return_exceptions=True)
+            engine.dispose()
 
     app = FastAPI(title="AgentEval", version=__version__, lifespan=lifespan,
-                  description="M1: local coordinator; distributed recovery is not implemented.",
+                  description="Database-owned evaluation with fenced local/Celery workers.",
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sessions, app.state.engine = sessions, engine
     app.add_middleware(RequestLimit)
@@ -109,11 +116,12 @@ def create_app(settings=None):
 
     @router.get("/capabilities")
     def capabilities():
-        return {"version": __version__, "execution_mode": "single_process",
-                "adapters": ["http", "python"], "evaluators": list(CAPABILITIES),
-                "automatic_retries": False, "durable_queue": False, "project_concurrency_limits": False,
-                "langgraph": False, "llm_judge": False,
-                "pagination": "offset", "warning": "Use one API process; M2 recovery is not implemented"}
+        return {"version": __version__, "execution_mode": settings.execution_mode,
+                "adapters": ["http", "python", "langgraph"], "evaluators": list(CAPABILITIES),
+                "automatic_retries": "read_only_only", "durable_queue": settings.execution_mode == "celery",
+                "project_concurrency_limits": True, "langgraph": True, "llm_judge": True,
+                "judge_configured": bool(settings.judge_endpoint and settings.judge_model),
+                "pagination": "offset"}
 
     @router.post("/projects", status_code=201)
     def create_project(body: Named, session=Depends(database)):
@@ -223,13 +231,20 @@ def create_app(settings=None):
                     errors.append({"case_key": case.case_key, "evaluator": spec.instance_id, "code": "INVALID_ASSERTIONS"})
         if errors:
             raise HTTPException(422, detail={"code": "PREFLIGHT_FAILED", "errors": errors[:100]})
+        if profile.definition["execution"].get("max_retries", 0) and version.effects != "read_only":
+            raise HTTPException(422, detail={"code": "RETRY_REQUIRES_READ_ONLY"})
+        judge_specs = [e for e in specs if e.id == "llm_judge"]
+        if judge_specs and (not settings.judge_endpoint or not settings.judge_model):
+            raise HTTPException(422, detail={"code": "JUDGE_NOT_CONFIGURED"})
+        if len(judge_specs) * len(cases) * profile.definition["execution"]["repetitions"] > settings.judge_max_calls:
+            raise HTTPException(422, detail={"code": "JUDGE_BUDGET_EXCEEDED"})
         run = Run(project_id=agent.project_id, **body.model_dump(), manifest={}, manifest_hash="")
         session.add(run)
         session.flush()
-        run.manifest = snapshot(session, run)
+        run.manifest = snapshot(session, run, settings)
         run.manifest_hash = digest(run.manifest)
         batch = GradingBatch(run_id=run.id, revision=0, grading_manifest={
-            "parent_manifest_hash": run.manifest_hash, **profile.definition})
+            "parent_manifest_hash": run.manifest_hash, "judge": run.manifest["judge"], "engine_version": __version__, **profile.definition})
         session.add(batch)
         session.flush()
         for case in cases:
@@ -237,12 +252,17 @@ def create_app(settings=None):
                 trial = Trial(run_id=run.id, case_id=case.id, repetition_index=index)
                 session.add(trial)
                 session.flush()
-                session.add(Execution(trial_id=trial.id))
+                execution = Execution(trial_id=trial.id)
+                session.add(execution)
+                session.flush()
+                enqueue(session, run, "execute", execution.id)
         if idempotency_key:
             session.add(RequestDedup(project_id=agent.project_id, key_hash=digest(idempotency_key),
                                      request_hash=digest(body.model_dump()), run_id=run.id))
+        run.status = "queued"
         session.commit()
-        tasks.add_task(runner.execute, run.id, batch.id)
+        if settings.execution_mode == "local":
+            tasks.add_task(runner.execute, run.id, batch.id)
         return {**serialize(run), "grading_batch_id": batch.id}
 
     @router.get("/evaluations")
@@ -261,7 +281,7 @@ def create_app(settings=None):
             run.cancel_requested = True
             run.status = "cancelling"
             session.commit()
-        return {"status": run.status, "in_flight_policy": "finish_with_timeout; do not dispatch further calls"}
+        return {"status": run.status, "in_flight_policy": "stop local process; HTTP remote outcome may remain unknown"}
 
     @router.post("/evaluations/{run_id}/regrade", status_code=202)
     def regrade(run_id: str, tasks: BackgroundTasks, session=Depends(database)):
@@ -273,10 +293,13 @@ def create_app(settings=None):
             raise HTTPException(409, detail={"code": "GRADING_IN_PROGRESS"})
         revision = max(b.revision for b in batches) + 1
         batch = GradingBatch(run_id=run_id, revision=revision,
-                             grading_manifest=batches[0].grading_manifest)
+                             grading_manifest={**batches[0].grading_manifest, "engine_version": __version__})
         session.add(batch)
+        session.flush()
+        enqueue(session, run, "grade", batch.id)
         session.commit()
-        tasks.add_task(runner.grade, run_id, batch.id)
+        if settings.execution_mode == "local":
+            tasks.add_task(runner.grade, run_id, batch.id)
         return serialize(batch)
 
     def batch_for(session, run_id, batch_id):
@@ -317,7 +340,7 @@ def create_app(settings=None):
         return {"trace_id": trace_id, "execution_id": execution.id,
                 "observations": response.get("observations", {}),
                 "complete_channels": response.get("observations_complete", []),
-                "format": "M1 observation channels; OTel spans not yet implemented"}
+                "format": "Structured observation channels; full OTel spans not yet implemented"}
 
     @router.post("/regressions/compare", status_code=201)
     def create_comparison(body: CompareCreate, session=Depends(database)):
@@ -342,6 +365,37 @@ def create_app(settings=None):
     @router.get("/regressions")
     def comparisons(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
         return page(session, Comparison, offset, limit)
+
+    @router.get("/evaluations/{run_id}/work-items")
+    def work_items(run_id: str, session=Depends(database)):
+        get(session, Run, run_id)
+        return {"items": [serialize(x) for x in records(session, WorkItem, run_id=run_id)]}
+
+    @router.get("/evaluations/{run_id}/audit")
+    def audit(run_id: str, session=Depends(database)):
+        get(session, Run, run_id)
+        return {"items": [serialize(x) for x in records(session, AuditEvent, run_id=run_id)]}
+
+    @router.get("/evaluations/{run_id}/judge-calls")
+    def judge_calls(run_id: str, session=Depends(database)):
+        get(session, Run, run_id)
+        rows = session.scalars(select(JudgeCall).join(GradingBatch, JudgeCall.batch_id == GradingBatch.id).where(GradingBatch.run_id == run_id))
+        return {"items": [serialize(x) for x in rows]}
+
+    @router.post("/executions/{execution_id}/release-capacity")
+    def release_capacity(execution_id: str, body: ReleaseCapacity, x_admin_token: str = Header(""), session=Depends(database)):
+        if not settings.admin_token or not secrets.compare_digest(x_admin_token.encode(), settings.admin_token.encode()):
+            raise HTTPException(403, detail={"code": "ADMIN_REQUIRED"})
+        execution = get(session, Execution, execution_id)
+        trial = get(session, Trial, execution.trial_id)
+        run = get(session, Run, trial.run_id)
+        with runner.coordinator.locked(run.project_id) as locked:
+            item = locked.scalar(select(WorkItem).filter_by(kind="execute", target_id=execution_id))
+            if not item or item.status != "blocked":
+                raise HTTPException(409, detail={"code": "NOT_BLOCKED"})
+            item.status, item.epoch = "done", item.epoch + 1
+            locked.add(AuditEvent(run_id=run.id, action="ADMIN_CAPACITY_RELEASED", detail={"execution_id": execution_id, "reason": body.reason}))
+        return {"released": True, "verdict_unchanged": True, "execution_id": execution_id}
 
     app.include_router(router)
     # Hash routes stay in the browser, so API 404s never fall back to index.html.
