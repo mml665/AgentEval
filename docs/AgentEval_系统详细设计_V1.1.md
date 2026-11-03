@@ -2,7 +2,7 @@
 
 **文档版本：** V1.1  
 **对应产品版本：** MVP V1.0  
-**状态：** 设计基线，尚未实现或验证  
+**状态：** 目标设计基线；M1 实现范围与验证状态见 [构建状态](BUILD_STATUS.md)  
 **修订日期：** 2026-11-03  
 **需求依据：** [项目 PRD](AgentEval_PRD_V1.1.md)
 
@@ -64,9 +64,10 @@ React Web / Python SDK
 | TestCase | id、benchmark_version_id、case_key、input、assertions、tags、environment_config | `(benchmark_version_id, case_key)` 唯一 |
 | ProfileVersion | id、project_id、profile_key、version、definition、content_hash | 包含执行、判定、门禁协议 |
 | EvaluationRun | id、project_id、manifest、manifest_hash、status、progress、cancel_requested_at | 快照在入队前冻结 |
-| Trial | id、run_id、case_id、repetition_index、verdict、canonical_execution_id | `(run_id, case_id, repetition_index)` 唯一 |
+| Trial | id、run_id、case_id、repetition_index | `(run_id, case_id, repetition_index)` 唯一；不保存跨评分批次共用的判定 |
 | CaseExecution | id、trial_id、attempt_index、status、error_type、output_ref、trace_id、lease_epoch | `(trial_id, attempt_index)` 唯一 |
 | GradingBatch | id、run_id、revision、profile_hash、grading_manifest、status | 冻结评分配置与证据集；重评产生新批次 |
+| TrialAssessment | id、trial_id、grading_batch_id、selected_execution_id、verdict、reasons | `(trial_id, grading_batch_id)` 唯一；历史批次判定互不覆盖 |
 | EvaluationResult | id、grading_batch_id、execution_id、evaluator_id、evaluator_version、status、score、passed、evidence_ref | 同一批次/执行/评分器配置唯一 |
 | TraceSpan/Event | id、execution_id、trace_id、span_id、event_id、payload_ref | Span 与事件分别存储或明确类型 |
 | BadCase | id、trial_id、result_id、category、basis、confidence、evidence_ref | 可多标签，basis 区分事实/推断 |
@@ -307,6 +308,8 @@ gate:
 
 **Gate：** passed / failed / inconclusive。
 
+GradingBatch 独立维护 pending → running → completed / failed / cancelled。Run 进入终态后不因重评退回 evaluating；新批次自行展示评分进度。重评时历史 TrialAssessment 保留，新判定写入新批次。
+
 Run 同时展示评分完成率和异常计数；正常调用已结束但评分失败时允许 completed 且有 unknown，不将其伪装为全通过。
 
 ### 6.2 Trial 判定优先级
@@ -330,6 +333,7 @@ Run 同时展示评分完成率和异常计数；正常调用已结束但评分�
 - canonical_execution 指向最后一次合法重试得到的结局，不按最高分挑选；无合法重试时指首次尝试。
 - 第一尝试成功率、最终成功率、重试率、各次失败均保留；硬约束不会因重试消失。
 - 环境重置必须独占隔离环境并有成功校验，不能在共享环境中直接清理其他 Trial 状态。
+- 自动重试只发生在 Run 结束前。Run 进入终态后禁止追加执行尝试；人工重执行创建新 Run，关联来源 Run 和选定用例，不改变旧报告。M1 暂不提供重试接口。
 
 ### 6.4 聚合口径
 
@@ -362,6 +366,8 @@ Run 同时展示评分完成率和异常计数；正常调用已结束但评分�
 Worker 通过条件更新领取 pending 执行，写入 owner、lease_expires_at、递增 lease_epoch。心跳只在 owner/epoch 匹配时续约。任何结果和终态写入都附带 epoch；旧 Worker 不能覆盖新所有者结果。
 
 数据库唯一约束保证同一 attempt 只有一个有效终态。同一结果的重复回传不生成重复 EvaluationResult。租约保护本地状态，不能阻止外部系统已经发生的副作用。
+
+M2 调度器需在同一数据库事务内按 Project/Run 固定顺序锁定容量记录、检查可用槽位并领取执行；槽位随租约持有，不能使用各 Worker 的独立计数。Agent 与 Judge 使用不同容量池。停止未确认的远端调用保留占用状态，须经确认或管理员审计处置后回收，避免本地并发上限失真。M1 仅有单进程全局和单 Run 信号量，不实现项目配额。
 
 ### 7.3 崩溃恢复决策
 

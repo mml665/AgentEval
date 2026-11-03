@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "cases": [
+    {
+      "case_key": "order-1001",
+      "input": {"order_id": "1001"},
+      "assertions": {
+        "expected_output": {"order_id": "1001", "status": "shipped"},
+        "tools": {"allowed": ["get_order"], "required": ["get_order"], "arguments": {"get_order": {"order_id": "1001"}}},
+        "trajectory": {"required_steps": ["lookup", "respond"], "dependencies": [["lookup", "respond"]]},
+        "retrieval": {"judgment_status": "complete", "relevance": {"policy-shipped": 2, "policy-refund": 0}}
+      },
+      "tags": ["golden", "order"]
+    },
+    {
+      "case_key": "order-1002",
+      "input": {"order_id": "1002"},
+      "assertions": {
+        "expected_output": {"order_id": "1002", "status": "processing"},
+        "tools": {"allowed": ["get_order"], "required": ["get_order"], "arguments": {"get_order": {"order_id": "1002"}}},
+        "trajectory": {"required_steps": ["lookup", "respond"], "dependencies": [["lookup", "respond"]]},
+        "retrieval": {"judgment_status": "complete", "relevance": {"policy-shipped": 2, "policy-refund": 0}}
+      },
+      "tags": ["order"]
+    }
+  ]
+}
+

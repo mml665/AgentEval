@@ -16,8 +16,8 @@ def validate_config(spec):
     allowed = {
         "exact_match": {"actual_path", "expected_path"},
         "json_schema": {"actual_path", "schema"},
-        "tool_selection": {"forbidden"}, "tool_arguments": {},
-        "trajectory": {}, "rag": {"metric", "k"},
+        "tool_selection": {"forbidden"}, "tool_arguments": set(),
+        "trajectory": set(), "rag": {"metric", "k"},
     }[spec.id]
     if set(spec.config) - allowed:
         raise ValueError(f"Unknown configuration keys for {spec.id}")
@@ -113,7 +113,7 @@ def evaluate(spec: EvaluatorSpec, case: dict, response: dict) -> dict:
 
 
 def _evaluate(spec, case, response):
-    assertions = case["assertions"]
+    assertions = case.get("assertions", {})
     capability = CAPABILITIES[spec.id]
     if capability:
         observations = response["observations"]

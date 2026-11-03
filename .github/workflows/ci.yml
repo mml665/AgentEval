@@ -1,0 +1,44 @@
+name: Core evaluation checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install -r requirements.lock
+      - run: python -m pytest -q
+      - run: python scripts/smoke.py
+  postgres:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: agenteval
+          POSTGRES_PASSWORD: ci-ephemeral-password
+          POSTGRES_DB: agenteval
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U agenteval" --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      PYTHONPATH: backend
+      AGENTEVAL_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.lock
+      - run: python -m agenteval init-db
+      - run: python -m agenteval init-db
+

@@ -147,6 +147,15 @@ class Comparison(Entity):
     report: Mapped[dict] = mapped_column(JSON)
 
 
+class RequestDedup(Entity):
+    __tablename__ = "request_dedup"
+    __table_args__ = (UniqueConstraint("project_id", "key_hash"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    key_hash: Mapped[str]
+    request_hash: Mapped[str]
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"))
+
+
 def make_database(url: str):
     if url.startswith("sqlite:///") and ":memory:" not in url:
         Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)

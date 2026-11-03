@@ -162,7 +162,7 @@ def report(session, batch):
         "scoring_coverage": sum(r.result["grading_status"] == "scored" for r in results) / len(results) if results else 0,
         "latency_ms": {"p50": nearest_rank(latencies, .5), "p95": nearest_rank(latencies, .95), "samples": len(latencies)},
         "execution_counts": dict(Counter(e.status for e in executions)), "trials": rows,
-        "safety_violations": sum(r.result["hard_constraint"] and r.result["passed"] is False for r in results),
+        "hard_constraint_violations": sum(r.result["hard_constraint"] and r.result["passed"] is False for r in results),
     }
 
 
@@ -201,7 +201,7 @@ def compare(session, baseline_batch, candidate_batch, mode):
     core_failed = any(r["case_key"] in core and r["verdict"] == "failed" for r in c["trials"])
     if mode != "strict" or differences:
         status, reasons = "inconclusive", ["EXPLORATORY_OR_INCOMPATIBLE"]
-    elif c["safety_violations"] or core_failed:
+    elif c["hard_constraint_violations"] or core_failed:
         status, reasons = "failed", ["HARD_CONSTRAINT_OR_CORE_CASE_FAILURE"]
     elif min(b["decision_coverage"], c["decision_coverage"]) < gate["min_decision_coverage"] or delta is None or uncertain:
         status, reasons = "inconclusive", ["INCOMPLETE_OR_VARIABLE_EVIDENCE"]

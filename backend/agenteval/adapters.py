@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import sys
+from pathlib import Path
 from urllib.parse import urlsplit
 
 import httpx
@@ -51,6 +53,7 @@ async def invoke(adapter_type, configuration, request, timeout, settings):
             sys.executable, "-m", "agenteval.plugin_host",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
         )
         try:
             async with asyncio.timeout(timeout):
