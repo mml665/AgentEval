@@ -2,7 +2,20 @@
 
 面向异构 Agent 的自动化评测与回归分析平台。
 
-**当前版本：0.5.2。** 在 0.4 执行与 Trace 闭环上，新增独立环境状态验证、轨迹规则、工具证据与 ID 映射、评分器三层元数据、专项指标及性能门禁、Judge 标签校准流程、独立 FTS5 Retriever / TF-IDF Reranker 与 HTTP 接入。真实业务 Agent 的通用性、实际模型校准和完整生产验收仍待验证。
+**当前版本：0.5.2 · 最后更新：2026-11-03。** 已实现异构接入、四粒度评分、持久化执行、Trace 与回归闭环。最近两轮集中修复工具证据聚合、环境快照持久化、证据来源、故障注入和统计口径；0.5.2 进一步修复并发调用序号、快照校验及回归门禁边界。
+
+| 能力 | 当前状态与边界 |
+|---|---|
+| Agent 接入 | HTTP、可信 Python、实际 LangGraph；真实业务双项目验收待提供资源，本地集成样例不替代该验收 |
+| 四粒度评测 | 端到端、轨迹、逐工具调用、独立组件；无观测或不适用的指标保留未知/空值 |
+| 独立环境验证 | 平台读取隔离 SQLite 状态，快照先提交再重置；Agent 自述不能替代独立证据 |
+| 证据与恢复 | 平台来源标记、状态哈希校验、租约保护、崩溃前快照保留；未确认重置不放行门禁 |
+| 工具故障注入 | 受控 Python/LangGraph 工具支持 Mock、异常和超时；并发/递归调用序号按入口分配 |
+| 回归与统计 | Trial/Attempt 覆盖率分别报告；严格比较校验环境配置，支持样本量受限的 P95/工具错误率门禁 |
+| Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
+| 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
+
+**验证记录：** 0.5.2 的 100 项 Python 测试、5 项真实浏览器测试、前端生产构建及 HTTP/状态与 RAG/队列 smoke 通过，[对应 CI 全部通过](https://github.com/mml665/AgentEval/actions/runs/41605792390)。0.5.1 的 Compose 实测单独记录，不将其当作 0.5.2 镜像重新部署的证明。当前仍处于 MVP 验证阶段。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -37,7 +50,7 @@ export AGENTEVAL_API_TOKEN='replace-with-your-random-token-at-least-16-character
 .venv/bin/python -m agenteval serve
 ```
 
-API 默认监听 `127.0.0.1:8000`。除了 `/health`，业务接口均需 `Authorization: Bearer <token>`。受保护的 OpenAPI 文档位于 `/api/v1/openapi.json`；本轮未提供 Swagger 页面。`.env.example` 是配置参考，本地命令不自动加载 `.env`，应使用环境变量。
+API 默认监听 `127.0.0.1:8000`。`/health` 和 `/ready` 为公开健康探针，业务接口均需 `Authorization: Bearer <token>`。受保护的 OpenAPI 文档位于 `/api/v1/openapi.json`，未提供 Swagger 页面。`.env.example` 是配置参考，本地命令不自动加载 `.env`，应使用环境变量。
 
 本地模式默认以**单 API 进程**运行；独立队列模式通过多个 Worker 扩展。首次启动前执行迁移；应用启动不会隐式建表。数据库文件位于 `data/agenteval.db`，不会进入 Git。
 
@@ -110,6 +123,7 @@ $env:PYTHONPATH = 'backend'
 .venv/Scripts/python.exe -m pytest -q
 .venv/Scripts/python.exe scripts/smoke.py
 .venv/Scripts/python.exe scripts/v05_smoke.py
+.venv/Scripts/python.exe scripts/queue_smoke.py
 ```
 
 测试包括真实 HTTP/Python/LangGraph 调用、超时、重复投递、租约过期、旧结果拒绝、未知结果保留、Judge 故障、历史重评及旧版本迁移。`scripts/smoke.py` 自动启动临时 API 和 HTTP Agent，通过 SDK 执行完整回归，最后关闭进程；临时数据库和证据位于被 Git 忽略的 `.build/`。
@@ -156,7 +170,20 @@ docker compose up --build
 
 数据库密码使用 URL 安全随机字符，避免连接 URL 转义问题。API 仅映射到本机；数据库不暴露宿主端口。Redis 同样不暴露宿主端口；Worker 与 Dispatcher 等待 API 迁移及健康检查完成后启动。
 
-本机仅验证 Compose 配置解析，容器构建与运行尚未验证。PostgreSQL 迁移和前后端校验交由仓库 CI 执行，其实际状态应以 Actions 结果为准。
+0.5.1 已在本机 Docker Engine 29.3.1 完成镜像构建和 API、Worker、Dispatcher、PostgreSQL、Redis 全部启动。实测停止消费者、创建排队任务、重启数据库/Redis/API、恢复消费，任务仍完成，固定状态样例成功率为 100% / 0% / 100%。这验证了排队任务恢复，不覆盖所有在途故障及生产灾备场景。
+
+可通过 `AGENTEVAL_API_PORT` 调整宿主端口，默认 8000。独立验收使用临时凭据、8139 端口及名称以 `-acceptance` 结尾的专用 Compose 项目：
+
+```powershell
+# 设置专用 AGENTEVAL_API_TOKEN 和 POSTGRES_PASSWORD；Compose 也可从 .env 读取。
+$env:AGENTEVAL_API_PORT = '8139'
+docker compose -p agenteval-local-acceptance up -d --build
+# 脚本从环境变量读取上述凭据；只对独立验收栈执行。
+.venv/Scripts/python.exe scripts/compose_acceptance.py --project agenteval-local-acceptance
+docker compose -p agenteval-local-acceptance down
+```
+
+脚本会停止消费者并重启数据库、Redis 和 API；`down` 保留数据卷。Windows 中文路径下曾遇到 BuildKit 会话共享键错误，使用临时英文目录中的同一份构建源码后完成验收，详见 [0.5.1 验收记录](docs/V0.5.1_CORE_ACCEPTANCE.md)。
 
 ## 独立队列与新接入
 
@@ -190,7 +217,7 @@ Judge 每个评分项最多两次请求，只对传输错误与指定暂时状�
 
 组合验证：`python scripts/queue_smoke.py` 启动真实 Celery 进程，默认使用显式标注的 fakeredis 协议模拟及裁判模拟。设置 `AGENTEVAL_TEST_BROKER_URL` 后使用真实 Redis；CI 同时使用真实 Redis 和 PostgreSQL。测试不调用付费模型，不能作为实际 Judge 准确率证明。
 
-0.4 新功能：
+现有工作台与报告能力：
 
 - 工作台列表使用服务端分页和批量版本关联查询，不再每次轮询拉取所有资源；任务用例表分页，评分证据按执行 ID 获取。
 - “运行健康”页面区分存活与就绪，展示 API 维护循环、Worker/Dispatcher 心跳、积压和 blocked；临时异常进入退避恢复。
@@ -202,8 +229,24 @@ Judge 每个评分项最多两次请求，只对传输错误与指定暂时状�
 
 详细接口与验收说明见 [0.4 交付说明](docs/V0.4_ACCEPTANCE.md)。更多运行与恢复约定见 [M2 执行与 Judge 说明](docs/M2_EXECUTION_AND_JUDGE.md)。
 
+## 证据、故障与评分口径
+
+`Execution.evidence_provenance` 由平台写入，区分 Agent 自述、埋点数据与独立环境观察；埋点存在不等于业务状态独立验证。环境快照必须先持久化再重置，崩溃后保留已提交终态；重置完成但确认未落库时仍记 pending，不猜测为成功。状态来源或内容哈希校验失败会产生评分异常。
+
+逐调用工具评分独立处理通过、失败、证据不足，缺失证据不污染其他调用；任何必需调用的确定失败都会使该评分项得到 0 分。部分观测中的调用缺失不能证明未执行。第三方 ID 可显式映射，按同名出现次序匹配仅适用于完整且顺序可靠的通道。
+
+Profile 的 `execution.tool_faults` 可指定 `tool_name`、`call_index`、`mode`（mock/error/timeout）、`mock_output` 和 `delay_seconds`。注入规则随 Manifest 冻结，证据保留 platform_profile 标记；黑盒 HTTP/组件不支持此类注入。并发序号表示本次实际入口顺序，跨运行对齐应使用稳定 call_id。
+
+报告的 `trial_scoring_coverage` 使用 canonical Execution 的已评分项除以计划 Trial × 评分器实例数；`attempt_scoring_coverage` 使用所有尝试的已评分项除以 Attempt × 实例数。旧 `scoring_coverage` 是 Attempt 别名，覆盖率门禁使用 Trial 口径。重复试验成功率同时提供覆盖率，缺失证据不算零分。严格比较包含环境适配器配置，不兼容时拒绝；探索比较只披露差异，不给通过结论。
+
+真实 Judge 校准入口为 `scripts/calibrate_judge.py`，例如 `python scripts/calibrate_judge.py --output .build/judge-calibration.json --repetitions 3`。需要实际端点/模型配置；仓库种子标签尚待独立人工复核，模拟协议和离线分析不能替代真实模型一致性报告。
+
 ## 当前使用边界
 
 当前面向单可信团队。local 与 celery 模式采用相同数据库工作项、租约和结果保护协议；API 重启不撤销有效 Worker 租约。租约过期且结果未确认时标记 unknown，未知副作用不自动重跑，并保留容量待管理员核验。取消可终止本地插件进程，但中断 HTTP 等待不代表远端已停止。
 
 已使用 OpenTelemetry SDK 记录本平台埋点范围内的父子 Span、事件、输入输出和耗时，并通过增量 IPC 保留失败或超时前的轨迹；黑盒内部未提供的观测不生成。输入输出尚未实现业务敏感数据的完整脱敏、制品存储和留存清理，请使用脱敏测试数据。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。
+
+## 文档维护
+
+每轮构建同步更新本 README 的版本、交付能力、验证记录和未完成边界，并与 BUILD_STATUS、对应验收说明保持一致。历史验证按版本保留，不以模拟服务代替真实验收，也不将旧版本部署结果记作新版本重新验收。
