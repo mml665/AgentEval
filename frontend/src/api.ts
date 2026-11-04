@@ -5,6 +5,14 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  ENGINE_REASSESSMENT_REQUIRED: '该证据来自较旧引擎。请先在评测详情重新评分，再导入当前批次或建立新的版本比较。',
+  ISSUE_REVISION_CONFLICT: '问题已被更新，请刷新后再保存。',
+  INVALID_ISSUE_TRANSITION: '请按确认、修复、待复测的顺序处理；关闭状态由复测证据决定。',
+  ISSUE_NOT_READY_OR_STALE: '问题尚未进入待复测，或记录已变化，请刷新并核对状态。',
+  RETEST_POLICY_MISMATCH: '复测的评分、执行、环境、裁判配置或引擎版本与来源不一致，不能直接认定修复。',
+  RETEST_CASE_MISMATCH: '复测没有包含相同输入和预期断言的用例，不能认定修复。',
+  INVALID_RETEST_BATCH: '请选择同一项目的新评分批次，不能用原失败批次确认修复。',
+  IDEMPOTENCY_CONFLICT: '请求标识已用于另一组配置，请返回修改后重新提交。',
   JUDGE_NOT_CONFIGURED: '服务端尚未配置 Judge 接口和模型，请先设置裁判环境变量。',
   JUDGE_BUDGET_EXCEEDED: '计划的 Judge 调用数超过单 Run 预算。',
   RETRY_REQUIRES_READ_ONLY: '自动重试仅适用于显式声明为只读的 Agent 版本。',

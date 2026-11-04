@@ -152,6 +152,53 @@ class Comparison(Entity):
     report: Mapped[dict] = mapped_column(JSON)
 
 
+class QualityIssue(Entity):
+    __tablename__ = "quality_issues"
+    __table_args__ = (UniqueConstraint("batch_id", "execution_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    batch_id: Mapped[str] = mapped_column(ForeignKey("grading_batches.id"))
+    execution_id: Mapped[str] = mapped_column(ForeignKey("case_executions.id"))
+    case_id: Mapped[str] = mapped_column(ForeignKey("test_cases.id"))
+    title: Mapped[str]
+    category: Mapped[str]
+    severity: Mapped[str]
+    status: Mapped[str] = mapped_column(default="open")
+    revision: Mapped[int] = mapped_column(default=0)
+    owner: Mapped[str] = mapped_column(default="")
+    confirmed_cause: Mapped[str] = mapped_column(default="")
+    evidence: Mapped[dict] = mapped_column(JSON)
+    retest_batch_id: Mapped[str | None] = mapped_column(ForeignKey("grading_batches.id"), nullable=True)
+    regression_version_id: Mapped[str | None] = mapped_column(ForeignKey("benchmark_versions.id"), nullable=True)
+
+
+class IssueEvent(Entity):
+    __tablename__ = "issue_events"
+    issue_id: Mapped[str] = mapped_column(ForeignKey("quality_issues.id"), index=True)
+    action: Mapped[str]
+    detail: Mapped[dict] = mapped_column(JSON)
+
+
+class RegressionCollection(Entity):
+    __tablename__ = "regression_collections"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), unique=True)
+    benchmark_id: Mapped[str] = mapped_column(ForeignKey("benchmarks.id"))
+
+
+class ReleaseDecision(Entity):
+    __tablename__ = "release_decisions"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    comparison_id: Mapped[str] = mapped_column(ForeignKey("regression_reports.id"))
+    status: Mapped[str]
+    snapshot: Mapped[dict] = mapped_column(JSON)
+
+
+class OnboardingReceipt(Entity):
+    __tablename__ = "onboarding_receipts"
+    request_key: Mapped[str] = mapped_column(unique=True)
+    request_hash: Mapped[str]
+    run_id: Mapped[str] = mapped_column(ForeignKey("evaluation_runs.id"))
+
+
 class RequestDedup(Entity):
     __tablename__ = "request_dedup"
     __table_args__ = (UniqueConstraint("project_id", "key_hash"),)

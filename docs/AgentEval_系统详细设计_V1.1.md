@@ -669,3 +669,15 @@ calibration.py 对固定批次和导入标签计算一致率、混淆矩阵、�
 retrieval.py 提供不同算法的 SQLite FTS5 Retriever 与 TF-IDF Reranker，另提供部署注册的 HTTP 组件入口。examples/rag_service.py 独立进程接收查询或候选并返回有序文档、分数和方法元数据，核心 Runner 无需因接入而修改。输入与返回仍遵守可信部署及精确网络允许清单；此实现不等同于生产组件鉴权与网络隔离已验收。
 
 完整 Schema、示例、运行方式、边界与新增验收见 [0.5 验收说明](V0.5_ACCEPTANCE.md)。原设计中的 Artifact、ReviewRecord、全面脱敏、安全隔离及全套部署演练仍为待交付部分。
+
+## 21. 0.6 产品闭环实现
+
+新增 product.py 与 product_contracts.py，仍在同一 FastAPI 服务和鉴权边界下安装路由。向导复用 validate_agent_config、Profile/Case 预检与原 create_run；同一 Session 事务创建项目/Agent/数据集/Profile/Run/OnboardingReceipt，固定请求键防重复，不另建执行器。接入检查对可信插件只校验注册，HTTP 只发送允许清单内的 HEAD 探测，明确区分声明能力与实测观测。
+
+0006 固定 DDL 增加 QualityIssue、IssueEvent、RegressionCollection、ReleaseDecision、OnboardingReceipt。QualityIssue 唯一约束为批次+执行；来源证据绑定原评分及用例内容哈希。人工更新受 revision 与状态机约束，resolved 仅能由同项目、相同输入/断言、兼容评分/执行/环境/Judge/引擎且全部重复 Trial 通过的新批次产生。历史硬约束失败保持单独事实及来源执行 ID。
+
+RegressionCollection 为项目指向普通 Benchmark；沉淀案例以不可变版本追加，内容重复复用已有版本，key 冲突使用内容哈希后缀，旧测试集不修改。ReleaseDecision 在 Project 锁内同时读取固定比较和当前同案例范围的开放阻断项，冻结问题修订号、版本、门禁和覆盖信息，提供三态建议及鉴权导出。它不修改原 Comparison、GradingBatch 或生产系统。
+
+工作台在服务端按项目计算总数、全局阻断优先队列和候选批次指标，避免从 UI 当前页推断全局状态。版本比较选择器使用独立分页查询读取项目全部已结束任务；旧资源管理仍保留。新增前端产品页面复用现有 Trace、证据组件和 API 令牌内存策略。
+
+产品工作流、数据边界、API、升级与验收见 [0.6 产品闭环](V0.6_PRODUCT_ACCEPTANCE.md)。单可信团队边界不变，人工负责人字段不等同于认证身份。真实用户指标和真实业务接入不由集成样例替代。

@@ -314,6 +314,10 @@ def create_app(settings=None):
             session.add(RequestDedup(project_id=agent.project_id, key_hash=digest(idempotency_key),
                                      request_hash=digest(body.model_dump()), run_id=run.id))
         run.status = "queued"
+        receipt = session.info.pop("pending_onboarding_receipt", None)
+        if receipt:
+            from agenteval.db import OnboardingReceipt
+            session.add(OnboardingReceipt(run_id=run.id, **receipt))
         session.commit()
         if settings.execution_mode == "local":
             tasks.add_task(runner.execute, run.id, batch.id)
@@ -464,6 +468,8 @@ def create_app(settings=None):
 
     from agenteval.extensions import install
     install(router, settings, sessions, database, get, serialize, create_run, runner)
+    from agenteval.product import install as install_product
+    install_product(router, settings, database, get, serialize, create_run, runner)
     app.include_router(router)
     # Hash routes stay in the browser, so API 404s never fall back to index.html.
     # Public static files contain no credentials or business data.

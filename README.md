@@ -1,11 +1,15 @@
 # AgentEval
 
-面向异构 Agent 的自动化评测与回归分析平台。
+面向 Agent 开发团队的自动化质量评测与回归决策平台。
 
-**当前版本：0.5.2 · 最后更新：2026-11-03。** 已实现异构接入、四粒度评分、持久化执行、Trace 与回归闭环。最近两轮集中修复工具证据聚合、环境快照持久化、证据来源、故障注入和统计口径；0.5.2 进一步修复并发调用序号、快照校验及回归门禁边界。
+**当前版本：0.6.0 · 最后更新：2026-11-04。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
 
 | 能力 | 当前状态与边界 |
 |---|---|
+| 质量工作台 | 同一候选批次的通过率、证据覆盖、延迟、真实版本差异及全项目阻断优先队列 |
+| 三步评测向导 | 连接与声明能力 → 选择目标 → 导入用例执行；复用原 Runner，事务提交和幂等回执 |
+| Bad Case 闭环 | 事实与候选解释分离，确认/修复/兼容复测、历史处理记录与不可变长期回归集 |
+| 版本发布决策 | 可发布 / 阻断 / 证据不足，冻结版本、评分批次与问题修订，支持 JSON/HTML 报告 |
 | Agent 接入 | HTTP、可信 Python、实际 LangGraph；真实业务双项目验收待提供资源，本地集成样例不替代该验收 |
 | 四粒度评测 | 端到端、轨迹、逐工具调用、独立组件；无观测或不适用的指标保留未知/空值 |
 | 独立环境验证 | 平台读取隔离 SQLite 状态，快照先提交再重置；Agent 自述不能替代独立证据 |
@@ -15,14 +19,27 @@
 | Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
 | 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
 
-**验证记录：** 0.5.2 的 100 项 Python 测试、5 项真实浏览器测试、前端生产构建及 HTTP/状态与 RAG/队列 smoke 通过，[对应 CI 全部通过](https://github.com/mml665/AgentEval/actions/runs/41605792390)。0.5.1 的 Compose 实测单独记录，不将其当作 0.5.2 镜像重新部署的证明。当前仍处于 MVP 验证阶段。
+**验证记录：** 本地 111 项 Python 测试、7 项真实浏览器测试和前端生产构建通过；产品 smoke 贯通假报成功、修复复测、回归沉淀和三态发布报告。CI 还在 PostgreSQL 上执行产品 smoke；实际结果以[提交对应 Actions](https://github.com/mml665/AgentEval/actions)为准。0.5.1 的 Compose 实测单独保留，不冒充 0.6 镜像重新部署证明。真实业务双 Agent、实际 Judge 校准及用户效率指标仍待验收。
 
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
 - [实际构建状态、限制与验证记录](docs/BUILD_STATUS.md)
+- [0.6 产品闭环与验收](docs/V0.6_PRODUCT_ACCEPTANCE.md)
 - [0.5.2 证据与恢复边界](docs/V0.5.2_HARDENING.md)
 - [0.5.1 核心修复与待验收项](docs/V0.5.1_CORE_ACCEPTANCE.md)
 - [0.5 使用契约与验收边界](docs/V0.5_ACCEPTANCE.md)
+
+## 第一次使用
+
+安装并启动后，打开工作台的“开始评测”：
+
+1. 连接 HTTP Agent 或选择部署好的 Python/LangGraph 插件。HTTP 使用 HEAD 检查响应；声明能力将在实际执行中核验。
+2. 选择回答、工具、轨迹、RAG 或独立状态目标；平台生成兼容配置。
+3. 导入带预期结果的 JSON/JSONL 并执行，直接查看评分事实与 Trace。
+
+在评测详情点击“跟踪本批次异常”，进入确认、修复和复测流程。复测必须保留相同输入/断言及兼容策略，全部对应 Trial 通过后才能关闭；可将案例沉淀到长期回归集。版本比较页面可直接“生成发布评估”，或从“发布决策”选择历史比较；证据不足会保留第三态，不默认可发布。
+
+预览演示项目为“AgentEval 0.6 产品闭环演示”，包含阻断、修复与可发布、探索比较证据不足的记录。它使用本地退款集成样例，不代表真实业务 Agent 已验收。首次有效评测时间 ≤15 分钟等建议指标仍需真实用户试用测量。
 
 ## 本地启动
 
@@ -75,7 +92,7 @@ Windows 已安装依赖并完成前端构建后，也可直接在仓库根目录
 
 脚本初始化数据库并启动服务；未设置环境变量时，仅从本机 `.env` 读取访问令牌；不存在有效令牌时生成随机令牌并保存。它不加载 `.env` 中其他配置。登录时使用 `AGENTEVAL_API_TOKEN` 的值，令牌不会保存到浏览器存储。
 
-页面包括：评测概览、Agent 注册和版本发布、Benchmark JSON/JSONL 导入、评分方案、任务创建和轮询、评分批次选择、执行证据、回归比较与门禁。空项目显示配置引导，可点击“创建演示项目”生成真实持久化示例并执行两次评测。
+页面包括：质量工作台、三步向导、Bad Case 管理、发布决策，以及 Agent/Benchmark/Profile 资源、任务、评分证据和回归比较。空项目显示配置引导，可点击“创建演示项目”生成真实持久化示例并执行两次评测。
 
 前端开发时保持 API 在 8000 端口运行，在 `frontend` 目录执行 `npm run dev`，访问终端显示的 Vite 地址。开发服务器通过同源代理访问 API；不同 API 地址可通过 `AGENTEVAL_DEV_API` 配置。
 
@@ -124,6 +141,7 @@ $env:PYTHONPATH = 'backend'
 .venv/Scripts/python.exe scripts/smoke.py
 .venv/Scripts/python.exe scripts/v05_smoke.py
 .venv/Scripts/python.exe scripts/queue_smoke.py
+.venv/Scripts/python.exe scripts/product_smoke.py
 ```
 
 测试包括真实 HTTP/Python/LangGraph 调用、超时、重复投递、租约过期、旧结果拒绝、未知结果保留、Judge 故障、历史重评及旧版本迁移。`scripts/smoke.py` 自动启动临时 API 和 HTTP Agent，通过 SDK 执行完整回归，最后关闭进程；临时数据库和证据位于被 Git 忽略的 `.build/`。
@@ -156,6 +174,10 @@ $env:PYTHONPATH = 'backend'
 | Judge 预算 | GET `/api/v1/evaluations/{id}/judge-budget` |
 | 固定批次导出 | GET `/api/v1/evaluations/{id}/export?grading_batch_id=…&format=json`（另支持 csv/html） |
 | 独立组件 | GET `/api/v1/components`；POST `/api/v1/component-evaluations` |
+| 质量工作台 | GET `/api/v1/quality/workbench/{project_id}` |
+| 三步向导 | GET `/api/v1/onboarding/options`；POST `/api/v1/onboarding/check`、`/api/v1/onboarding/evaluations` |
+| 缺陷闭环 | `/api/v1/quality/issues`，支持批次导入、处理、发起/核验复测及回归沉淀 |
+| 发布建议及报告 | POST/GET `/api/v1/release-decisions`；GET `/api/v1/release-decisions/{id}/export` |
 | 实际支持能力 | GET `/api/v1/capabilities` |
 
 列表当前使用 offset/limit。发布版本无更新接口。创建 Run 支持 `Idempotency-Key` 请求头；相同键和请求返回原 Run，不同请求返回 409。报告返回实际 `grading_batch_id`；历史查询应显式传入该 ID。
@@ -240,6 +262,10 @@ Profile 的 `execution.tool_faults` 可指定 `tool_name`、`call_index`、`mode
 报告的 `trial_scoring_coverage` 使用 canonical Execution 的已评分项除以计划 Trial × 评分器实例数；`attempt_scoring_coverage` 使用所有尝试的已评分项除以 Attempt × 实例数。旧 `scoring_coverage` 是 Attempt 别名，覆盖率门禁使用 Trial 口径。重复试验成功率同时提供覆盖率，缺失证据不算零分。严格比较包含环境适配器配置，不兼容时拒绝；探索比较只披露差异，不给通过结论。
 
 真实 Judge 校准入口为 `scripts/calibrate_judge.py`，例如 `python scripts/calibrate_judge.py --output .build/judge-calibration.json --repetitions 3`。需要实际端点/模型配置；仓库种子标签尚待独立人工复核，模拟协议和离线分析不能替代真实模型一致性报告。
+
+## 升级到 0.6
+
+先停止旧 API/Worker/Dispatcher 并备份数据库，运行 `python -m agenteval init-db` 至 0006，重新构建前端并启动。迁移增加缺陷、事件、回归集、发布评估及向导回执，不改写历史运行和评分。发布评估是对固定证据的建议，不直接执行生产部署；未完整独立核验业务状态的方案会明确显示范围。
 
 ## 当前使用边界
 

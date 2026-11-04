@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import type { API } from './api';
 import type { Agent, Benchmark, Profile, Run } from './types';
 import type { Workspace } from './workspace';
@@ -64,11 +64,14 @@ export function RunForm({ api, data, saved, close }: { api: API; data: Workspace
   return <Form onCancel={close} label="开始评测" submit={async f => { const run = await api.post<Run>('evaluations', { agent_version_id: field(f, 'agent'), benchmark_version_id: field(f, 'benchmark'), profile_version_id: field(f, 'profile') }); await saved(run); }}><Field label="Agent 版本"><select name="agent">{data.agentVersions.map(v => <option key={v.id} value={v.id}>{agentName(data, v.id)}</option>)}</select></Field><Field label="Benchmark 版本"><select name="benchmark">{data.benchmarkVersions.map(v => <option key={v.id} value={v.id}>{benchmarkName(data, v.id)} · {v.case_count} 条用例</option>)}</select></Field><Field label="评分方案"><select name="profile">{data.profiles.map(p => <option key={p.id} value={p.id}>{p.name} · v{p.version}</option>)}</select></Field><div className="callout"><Icon name="lock"/><span>创建后将冻结数据集、Agent 配置与评分方案。实际缺少必需证据时，结果会标记为待判定。</span></div></Form>;
 }
 
-export function CompareForm({ api, data, saved, close }: { api: API; data: Workspace; saved: (id: string) => Promise<void>; close: () => void }) {
-  const runs = data.runs.filter(r => ['completed', 'cancelled'].includes(r.status));
+export function CompareForm({ api, data, projectId, saved, close }: { api: API; data: Workspace; projectId: string; saved: (id: string) => Promise<void>; close: () => void }) {
+  const [runs, setRuns] = useState<(Run & { agent_label?: string; benchmark_label?: string })[]>(data.runs.filter(r => ['completed', 'cancelled'].includes(r.status)));
+  const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState('');
+  useEffect(() => { let alive = true; void api.all<Run & { agent_label?: string; benchmark_label?: string }>(`quality/runs?project_id=${projectId}`).then(values => { if (!alive) return; setRuns(values); setBaseline(values.at(-1)?.id || ''); setCandidate(values.find(r => r.id !== values.at(-1)?.id)?.id || ''); }).catch(e => { if (alive) setLoadError(e.message); }).finally(() => { if (alive) setLoading(false); }); return () => { alive = false; }; }, [api, projectId]);
   const [baseline, setBaseline] = useState(runs.at(-1)?.id || '');
   const [candidate, setCandidate] = useState(runs.find(r => r.id !== baseline)?.id || '');
   const [mode, setMode] = useState('strict');
+  if (loading || loadError) return <div className="form-body"><ErrorBox message={loadError}/><p>{loading ? '正在读取项目全部可比较任务…' : '无法读取比较任务。'}</p></div>;
   if (runs.length < 2) return <div className="form-body"><p className="muted">需要至少两个已结束的评测任务才能比较。</p><button className="button secondary" onClick={close}>返回任务</button></div>;
   return <Form onCancel={close} label="比较版本" submit={async () => {
     if (baseline === candidate) throw new Error('请选择两个不同的任务。');
@@ -76,7 +79,7 @@ export function CompareForm({ api, data, saved, close }: { api: API; data: Works
     const batches = selected.map(r => [...(r.grading_batches || [])].filter(b => b.status === 'completed').sort((a, b) => b.revision - a.revision)[0]);
     if (batches.some(b => !b)) throw new Error('所选任务尚无已完成的评分批次。');
     const comparison = await api.post<{ id: string }>('regressions/compare', { baseline_batch_id: batches[0].id, candidate_batch_id: batches[1].id, mode }); await saved(comparison.id);
-  }}><Field label="基线任务"><select value={baseline} onChange={e => setBaseline(e.target.value)}>{runs.map(r => <option key={r.id} value={r.id}>{agentName(data, r.agent_version_id)} · {short(r.id)}</option>)}</select></Field><Field label="候选任务"><select value={candidate} onChange={e => setCandidate(e.target.value)}>{runs.map(r => <option key={r.id} value={r.id}>{agentName(data, r.agent_version_id)} · {short(r.id)}</option>)}</select></Field><Field label="比较模式"><select value={mode} onChange={e => setMode(e.target.value)}><option value="strict">严格比较 · 校验数据集与评分条件</option><option value="exploratory">探索比较 · 披露差异，不产生通过门禁</option></select></Field><div className="callout"><Icon name="compare"/><span>默认选择最新已完成的评分批次。报告会固定引用该批次，后续重评不会改写历史结论。</span></div></Form>;
+  }}><Field label="基线任务"><select value={baseline} onChange={e => setBaseline(e.target.value)}>{runs.map(r => <option key={r.id} value={r.id}>{r.agent_label || agentName(data, r.agent_version_id)} · {r.benchmark_label || ''} · {short(r.id)}</option>)}</select></Field><Field label="候选任务"><select value={candidate} onChange={e => setCandidate(e.target.value)}>{runs.map(r => <option key={r.id} value={r.id}>{r.agent_label || agentName(data, r.agent_version_id)} · {r.benchmark_label || ''} · {short(r.id)}</option>)}</select></Field><Field label="比较模式"><select value={mode} onChange={e => setMode(e.target.value)}><option value="strict">严格比较 · 校验数据集与评分条件</option><option value="exploratory">探索比较 · 披露差异，不产生通过门禁</option></select></Field><div className="callout"><Icon name="compare"/><span>默认选择最新已完成的评分批次。报告会固定引用该批次，后续重评不会改写历史结论。</span></div></Form>;
 }
 
 export function ProfileCard({ profile }: { profile: Profile }) { return <div className="profile-card"><div className="card-title"><span className="resource-icon"><Icon name="sliders"/></span><span className="tag">v{profile.version}</span></div><h3>{profile.name}</h3><p>{profile.definition.evaluators.length} 个评分器 · {profile.definition.execution.repetitions} 次重复试验</p><div className="rule-list">{profile.definition.evaluators.map(e => <div key={e.instance_id}><span>{e.id}</span>{e.hard_constraint ? <span className="tag amber">硬约束</span> : <span className="tag">{e.required === false ? '可选' : '必需'}</span>}</div>)}</div><div className="profile-footer"><span><Icon name="clock" size={14}/>{profile.definition.execution.timeout_seconds}s 超时</span><Badge status="completed"/></div></div>; }

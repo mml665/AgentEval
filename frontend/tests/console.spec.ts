@@ -21,9 +21,9 @@ test('login rejects invalid token, then completes real evaluation, evidence and 
   await page.getByRole('button', { name: '进入工作台' }).click();
   await expect(page.getByRole('heading', { name: /从一个项目开始/ })).toBeVisible();
   await page.getByRole('button', { name: '创建演示项目', exact: true }).click();
-  await expect(page.getByRole('heading', { name: '评测概览', exact: true })).toBeVisible({ timeout: 45000 });
-  await expect(page.locator('.metric-card').filter({ hasText: '评测任务' }).locator('strong')).toHaveText('2');
-  await expect(page.locator('.metric-card').filter({ hasText: '最近任务成功率' }).locator('strong')).toHaveText('50%');
+  await expect(page.getByRole('heading', { name: '质量工作台', exact: true })).toBeVisible({ timeout: 45000 });
+  await expect(page.locator('.metric-card').filter({ hasText: '待处理缺陷' }).locator('strong')).toHaveText('0');
+  await expect(page.locator('.metric-card').filter({ hasText: '评测通过率' }).locator('strong')).toHaveText('50%');
   await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Order Assistant', exact: true })).toBeVisible();
   await expect(page.locator('.version-item')).toHaveCount(2);
@@ -49,7 +49,7 @@ test('login rejects invalid token, then completes real evaluation, evidence and 
   await expect(page.getByRole('heading', { name: '未通过质量门禁' })).toBeVisible();
   await expect(page.locator('.change-card').filter({ hasText: '新增失败' })).toContainText('order-1001');
   await page.screenshot({ path: '../.build/console-regression.png', fullPage: true });
-  await page.getByRole('link', { name: '评测概览', exact: true }).click();
+  await page.getByRole('link', { name: '质量工作台', exact: true }).click();
   await page.screenshot({ path: '../.build/console-overview.png', fullPage: true });
   const stored = await page.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }));
   expect(stored).not.toContain(token);
@@ -177,4 +177,82 @@ test('independent state evidence rejects a false success claim and is inspectabl
   await expect(page.getByRole('dialog')).toContainText('independent_environment_adapter');
   await expect(page.getByRole('dialog')).toContainText('verified');
   await page.screenshot({ path: '../.build/console-state-proof.png', fullPage: true });
+});
+
+test('guided evaluation diagnoses false success, tracks repair, verifies retest and saves release decision', async ({ page, request }) => {
+  const browserErrors: string[] = [];
+  page.on('pageerror', e => browserErrors.push(e.message));
+  async function post(path: string, data: unknown) {
+    const response = await request.post(`/api/v1/${path}`, { data, headers: { Authorization: `Bearer ${token}` } });
+    expect(response.ok(), await response.text()).toBeTruthy();
+    return response.json();
+  }
+  await login(page);
+  await page.getByRole('link', { name: '开始评测', exact: true }).click();
+  await page.getByLabel('Agent 名称', { exact: true }).fill('向导退款反例');
+  await page.getByLabel('部署插件').selectOption('example.refund.liar');
+  await page.getByRole('button', { name: '校验接入并继续' }).click();
+  await expect(page.getByText('部署插件已注册；观测能力将在首次执行中核验。')).toBeVisible();
+  await page.getByRole('checkbox', { name: /独立状态验证/ }).check();
+  await page.getByLabel('独立环境适配器').selectOption('sqlite.refund.v1');
+  await page.getByRole('button', { name: '下一步：准备测试用例' }).click();
+  await page.getByRole('button', { name: '退款状态示例' }).click();
+  await page.getByRole('button', { name: '执行评测并查看分析' }).click();
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  const runId = new URL(page.url()).hash.split('/')[2];
+  const runResponse = await request.get(`/api/v1/evaluations/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
+  const source = await runResponse.json();
+  const agent = await post('agents', { project_id: source.project_id, name: '修复后的退款图', adapter_type: 'langgraph' });
+  const av = await post(`agents/${agent.id}/versions`, { version: 'fixed', configuration: { plugin_id: 'example.refund.graph' } });
+  await page.getByRole('button', { name: '跟踪本批次异常' }).click();
+  await expect(page.getByRole('heading', { name: 'Bad Case 管理', exact: true })).toBeVisible();
+  await page.locator('tbody tr').filter({ hasText: 'refund-1001' }).getByRole('link', { name: '分析与处理' }).click();
+  await expect(page.locator('.page-heading p')).toContainText('输出与业务状态不一致');
+  await expect(page.getByText('候选排查方向 · 待开发者确认')).toBeVisible();
+  await page.getByLabel('负责人', { exact: true }).fill('验收开发者');
+  await page.getByLabel('开发者确认的根因').fill('已确认 Agent 只生成消息，未执行退款写入。');
+  for (const [status, label] of [['confirmed', '已确认'], ['fix_in_progress', '修复中'], ['ready_for_retest', '待复测']]) {
+    await page.getByLabel('处理状态').selectOption(status);
+    await page.getByLabel('本次处理说明').fill(`验收：${label}`);
+    await page.getByRole('button', { name: '保存处理记录' }).click();
+    await expect(page.locator('.page-heading p')).toContainText(label);
+  }
+  await page.getByLabel('修复后的 Agent 版本').selectOption(av.id);
+  await page.getByRole('button', { name: '开始复测', exact: true }).click();
+  await expect(page.getByRole('link', { name: '查看复测任务', exact: true })).toBeVisible();
+  const retestId = (await page.getByRole('link', { name: '查看复测任务', exact: true }).getAttribute('href'))!.split('/')[2];
+  await expect.poll(async () => { const r = await request.get(`/api/v1/evaluations/${retestId}`, { headers: { Authorization: `Bearer ${token}` } }); return (await r.json()).status; }).toBe('completed');
+  await page.getByRole('button', { name: '核验复测并更新状态' }).click();
+  await expect(page.locator('.page-heading p')).toContainText('复测已通过');
+  await page.getByRole('button', { name: '加入长期回归集', exact: true }).click();
+  await expect(page.getByRole('button', { name: '已加入长期回归集', exact: true })).toBeDisabled();
+  await page.screenshot({ path: '../.build/product-issue-resolved.png', fullPage: true });
+  const retest = await (await request.get(`/api/v1/evaluations/${retestId}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const comparison = await post('regressions/compare', { baseline_batch_id: source.grading_batches[0].id, candidate_batch_id: retest.grading_batches[0].id });
+  await page.getByRole('link', { name: '发布决策', exact: true }).click();
+  await page.getByLabel('选择固定版本比较').selectOption(comparison.id);
+  await page.getByLabel('评估说明（可选）').fill('固定证据通过；修复已复测。');
+  await page.getByRole('button', { name: '生成固定发布评估' }).click();
+  await expect(page.getByRole('heading', { name: '可发布', exact: true })).toBeVisible();
+  const [download] = await Promise.all([page.waitForEvent('download'), page.getByRole('button', { name: '导出发布报告 JSON' }).click()]);
+  const { readFile } = await import('node:fs/promises');
+  const exported = JSON.parse(await readFile((await download.path())!, 'utf-8'));
+  expect(exported.status).toBe('ready');
+  expect(exported.snapshot.evidence_complete).toBe(true);
+  await page.screenshot({ path: '../.build/product-release-ready.png', fullPage: true });
+  await page.getByRole('link', { name: '质量工作台', exact: true }).click();
+  await expect(page.locator('.metric-card').filter({ hasText: '评测通过率' }).locator('strong')).toHaveText('100%');
+  await page.screenshot({ path: '../.build/product-workbench.png', fullPage: true });
+  expect(browserErrors).toEqual([]);
+});
+
+test('guided setup fits mobile viewport without requiring resource terminology', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await login(page);
+  await page.getByLabel('打开导航').click();
+  await page.getByRole('link', { name: '开始评测', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '三步开始评测' })).toBeVisible();
+  await expect.poll(() => page.locator('aside.sidebar').evaluate(e => e.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await page.screenshot({ path: '../.build/product-mobile-guide.png', fullPage: true });
 });
