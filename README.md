@@ -296,4 +296,4 @@ with AgentEvalClient(base_url, deployment_token) as client:
     page = client.list_evaluations(project_id, quality="failed", q="订单", limit=10)
 ```
 
-固定批次报告新增 `quality_summary` 和 P95 样本阈值说明。证据详情可查看规则事实、预期/实际路径差异和来源 Trace；高级 JSON 与哈希仍可展开。此摘要不修改历史数据，也不取代开发者确认根因。
+固定批次报告新增 `quality_summary` 和 P95 样本阈值说明。证据详情可查看规则事实、预期/实际路径差异和来源 Trace；高级 JSON 与哈希仍可展开。此摘要不修改历史数据，也不取代开发者确认根因。未知结果即便没有详细原因，也保留待判定语义。

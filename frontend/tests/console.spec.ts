@@ -359,6 +359,21 @@ test('team task query searches all pages, preserves URL context, rejects stale r
   await expect(page.getByLabel('用例结果筛选')).toHaveValue('bad');
   await expect(page.locator('.metric-card').filter({ hasText: '调用 P95' }).locator('strong')).toHaveText('样本不足');
   await expect(page.locator('.metric-card').filter({ hasText: '调用 P95' })).toContainText('最低 20 个');
+  // An isolated UI contract fixture: empty reasons must not turn an unknown verdict into a pass claim.
+  const reportPath = `**/api/v1/evaluations/${target.id}/report?**`;
+  await page.route(reportPath, async route => {
+    const response = await route.fetch(), data = await response.json();
+    data.counts = { passed: 0, failed: 0, unknown: data.planned_trials, excluded: 0 };
+    data.success_rate = null; data.decision_coverage = 0;
+    data.trials = data.trials.map((t: object) => ({ ...t, verdict: 'unknown', reasons: [] }));
+    data.quality_summary = { ...data.quality_summary, quality_status: 'insufficient', counts: data.counts };
+    await route.fulfill({ response, json: data });
+  });
+  await page.getByRole('button', { name: '刷新任务', exact: true }).click();
+  await expect(page.getByText('证据未形成有效判定', { exact: true })).toBeVisible();
+  await expect(page.getByText('全部必需项通过', { exact: true })).toHaveCount(0);
+  await expect(page.locator('.metric-card').filter({ hasText: '任务成功率' }).locator('strong')).toHaveText('—');
+  await page.unroute(reportPath);
   await page.getByRole('link', { name: '全部评测任务', exact: true }).click();
   await expect(page.getByLabel('搜索任务')).toHaveValue(target.id);
   await expect(page.locator('.task-table tbody tr')).toHaveCount(1);
