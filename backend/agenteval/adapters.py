@@ -13,9 +13,10 @@ MAX_OUTPUT_BYTES = 1_048_576
 
 
 class AgentFailure(Exception):
-    def __init__(self, message, response=None):
+    def __init__(self, message, response=None, code="AGENT_PROTOCOL_OR_EXECUTION_ERROR"):
         super().__init__(message)
         self.response = response
+        self.code = code
 
 
 def validate_agent_config(adapter_type, configuration, settings):
@@ -30,8 +31,10 @@ def validate_agent_config(adapter_type, configuration, settings):
         if set(configuration) != {"plugin_id"} or configuration["plugin_id"] not in registry:
             raise ValueError("Only deployment-registered plugin_id values are supported")
     else:
-        if set(configuration) != {"endpoint"}:
-            raise ValueError("HTTP configuration supports endpoint only; inline credentials are forbidden")
+        if "endpoint" not in configuration or set(configuration) - {"endpoint", "credential_version_id"}:
+            raise ValueError("HTTP accepts endpoint and optional credential_version_id; inline secrets are forbidden")
+        if "credential_version_id" in configuration and (not isinstance(configuration["credential_version_id"], str) or not configuration["credential_version_id"]):
+            raise ValueError("credential_version_id must be a registered immutable reference")
         validate_url(configuration["endpoint"], settings)
 
 
@@ -55,14 +58,24 @@ async def bounded_read(stream):
     return bytes(data)
 
 
-async def invoke(adapter_type, configuration, request, timeout, settings, trace_buffer=None):
+def plugin_environment(settings):
+    required = {"PATH", "SystemRoot", "WINDIR", "TEMP", "TMP", "TMPDIR", "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "SYSTEMDRIVE",
+        "COMSPEC", "PATHEXT", "LANG", "LC_ALL", "LC_CTYPE", "TZ", "SSL_CERT_FILE", "SSL_CERT_DIR"}
+    permitted = required | {"AGENTEVAL_RETRIEVER_ENDPOINT", "AGENTEVAL_RERANKER_ENDPOINT", "AGENTEVAL_HTTP_ALLOWLIST"} | {key for key in settings.plugin_env_allowlist if not key.upper().startswith("AGENTEVAL_")}
+    normalize = str.upper if os.name == "nt" else lambda key: key
+    permitted = {normalize(key) for key in permitted}
+    return {**{key: value for key,value in os.environ.items() if normalize(key) in permitted},
+        "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "AGENTEVAL_STREAM_TRACE": "1"}
+
+
+async def invoke(adapter_type, configuration, request, timeout, settings, trace_buffer=None, headers=None):
     validate_agent_config(adapter_type, configuration, settings)
     if adapter_type in ("python", "langgraph", "component"):
         process = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "agenteval.plugin_host",
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=262144,
-            env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1]), "AGENTEVAL_STREAM_TRACE": "1"},
+            env=plugin_environment(settings),
         )
         async def collect():
             try:
@@ -95,10 +108,13 @@ async def invoke(adapter_type, configuration, request, timeout, settings, trace_
             except TimeoutError:
                 collecting.cancel()
     else:
+        if configuration.get("credential_version_id") and not headers:
+            raise AgentFailure("Credential reference was not resolved", code="CREDENTIAL_UNAVAILABLE")
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=False, trust_env=False) as client:
-            async with client.stream("POST", configuration["endpoint"], json=request) as response:
+            async with client.stream("POST", configuration["endpoint"], json=request, headers=headers or {}) as response:
                 if response.status_code != 200:
-                    raise AgentFailure(f"HTTP agent returned status {response.status_code}")
+                    code = "HTTP_AUTH_REJECTED" if response.status_code == 401 else "HTTP_PERMISSION_DENIED" if response.status_code == 403 else "HTTP_REDIRECT_REJECTED" if 300 <= response.status_code < 400 else "HTTP_AGENT_STATUS_ERROR"
+                    raise AgentFailure("HTTP Agent rejected the request", code=code)
                 data = bytearray()
                 async for chunk in response.aiter_bytes():
                     data.extend(chunk)
@@ -107,13 +123,17 @@ async def invoke(adapter_type, configuration, request, timeout, settings, trace_
                 raw = bytes(data)
     try:
         response = json.loads(raw)
+        if headers:
+            from agenteval.credentials import contains_secret
+            if contains_secret(response, headers):
+                raise AgentFailure("Agent echoed a credential; result discarded", code="HTTP_SENSITIVE_RESPONSE_REJECTED")
         if not isinstance(response, dict) or "output" not in response:
-            raise ValueError("Missing output")
+            raise AgentFailure("Missing output", code="HTTP_PROTOCOL_ERROR" if adapter_type == "http" else "AGENT_PROTOCOL_OR_EXECUTION_ERROR")
         # Reject NaN/Infinity even if the remote serializer accepts them.
         json.dumps(response, allow_nan=False)
         if response.get("status") == "agent_failed":
-            raise AgentFailure("Trusted plugin failed", response)
+            raise AgentFailure("Agent reported business failure", response, code="HTTP_BUSINESS_FAILURE" if adapter_type == "http" else "AGENT_PROTOCOL_OR_EXECUTION_ERROR")
         return response
     except (ValueError, TypeError, UnicodeError) as exc:
-        raise AgentFailure("Agent returned an invalid JSON result") from exc
+        raise AgentFailure("Agent returned an invalid JSON result", code="HTTP_INVALID_JSON" if adapter_type == "http" else "AGENT_PROTOCOL_OR_EXECUTION_ERROR") from None
 

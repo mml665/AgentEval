@@ -38,7 +38,7 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return {**serialize(issue), "case_key": case.case_key, "case_definition": case.definition,
                 "run_id": batch.run_id, "issue_scope": serialize(scope_for(session, issue.id)),
                 "fact_summary": summarize(issue.execution_id, batch.id, execution.trace_id, issue.evidence["facts"],
-                    next((f["status"] for f in issue.evidence["facts"] if f["kind"] == "execution"), None), execution.response, case.definition)}
+                    next((f["status"] for f in issue.evidence["facts"] if f["kind"] == "execution"), None), execution.response, case.definition, execution.error)}
 
     @router.get("/onboarding/options")
     def options():
@@ -54,8 +54,8 @@ def install(router, settings, database, get, serialize, create_run, runner):
 
     @router.get("/quality/agent-versions")
     def quality_versions(project_id: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
-        query = select(AgentVersion, Agent.name).join(Agent, Agent.id == AgentVersion.agent_id).where(Agent.project_id == project_id, Agent.adapter_type != "component")
-        return {"items": [{**serialize(v), "agent_name": name} for v, name in session.execute(query.order_by(AgentVersion.created_at.desc(), AgentVersion.id).offset(offset).limit(limit))],
+        query = select(AgentVersion, Agent.name, Agent.adapter_type).join(Agent, Agent.id == AgentVersion.agent_id).where(Agent.project_id == project_id, Agent.adapter_type != "component")
+        return {"items": [{**serialize(v), "agent_name": name, "adapter_type": adapter} for v, name, adapter in session.execute(query.order_by(AgentVersion.created_at.desc(), AgentVersion.id).offset(offset).limit(limit))],
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/quality/runs")
@@ -79,18 +79,24 @@ def install(router, settings, database, get, serialize, create_run, runner):
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.post("/onboarding/check")
-    async def connection_check(body: ConnectionCheck):
+    async def connection_check(body: ConnectionCheck, session=Depends(database)):
         try:
             validate_agent_config(body.adapter_type, body.configuration, settings)
         except ValueError as exc:
             raise HTTPException(422, detail={"code": "INVALID_AGENT_CONFIGURATION", "message": str(exc)})
         if body.adapter_type != "http":
             return {"status": "registered", "capabilities_verified": False, "message": "部署插件已注册；观测能力将在首次执行中核验。"}
+        from agenteval.credentials import resolve, CredentialError
+        try:
+            headers = resolve(session, settings, body.project_id, body.configuration)
+        except CredentialError as exc:
+            raise HTTPException(422, detail={"code": exc.code}) from None
         try:
             async with httpx.AsyncClient(timeout=5, follow_redirects=False, trust_env=False) as client:
-                reply = await client.head(body.configuration["endpoint"])
+                reply = await client.head(body.configuration["endpoint"], headers=headers)
             return {"status": "reachable", "http_status": reply.status_code, "capabilities_verified": False,
-                    "message": "服务已响应 HEAD 探测；未发送业务执行 POST，执行协议与观测能力待首次评测核验。"}
+                    "checks": {"address": "verified", "network": "reachable", "authentication": "rejected" if reply.status_code in (401,403) else "not_verified", "protocol": "not_verified", "observations": "not_verified"},
+                    "message": "HEAD 鉴权被拒，请核对凭据及接口权限；业务 POST 协议尚未验证。" if reply.status_code in (401,403) else "HEAD 方法不支持（405）；不能据此判断业务 POST，请选择测试用例明确验证。" if reply.status_code == 405 else "服务已响应 HEAD 探测；未发送业务执行 POST，执行协议与观测能力待首次评测核验。"}
         except httpx.RequestError:
             raise HTTPException(422, detail={"code": "CONNECTION_FAILED", "message": "HEAD 连通性检查失败，请检查服务与网络允许清单。"})
 
@@ -127,6 +133,8 @@ def install(router, settings, database, get, serialize, create_run, runner):
             raise HTTPException(422, detail={"code": "INVALID_GUIDED_CONFIGURATION", "message": str(exc)})
         project = get(session, Project, body.project_id) if body.project_id else Project(name=body.project_name, description="通过三步评测向导创建")
         session.add(project); session.flush()
+        from agenteval.credentials import validate_reference
+        validate_reference(session, settings, project.id, body.agent.configuration)
         agent = Agent(project_id=project.id, name=body.agent_name, adapter_type=body.adapter_type, description="向导接入")
         session.add(agent); session.flush()
         av = AgentVersion(agent_id=agent.id, **body.agent.model_dump(), content_hash=digest(body.agent.model_dump()))
@@ -158,16 +166,21 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return {"items": imported, "source_batch_id": batch.id}
 
     @router.get("/quality/issues")
-    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, assignee_user_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         get(session, Project, project_id)
         query = select(QualityIssue).where(QualityIssue.project_id == project_id)
         if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
             scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
             ids = [i.id for i, _ in applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])]
             query = query.where(QualityIssue.id.in_(ids))
+        if assignee_user_id: query = query.where(QualityIssue.assignee_user_id == assignee_user_id)
+        grouped = list(session.execute(query.with_only_columns(QualityIssue.kind, QualityIssue.status, func.count()).group_by(QualityIssue.kind, QualityIssue.status)))
+        triage = {"pending": sum(n for kind,state,n in grouped if kind == "anomaly" and state == "open"),
+            "repair": sum(n for kind,state,n in grouped if kind == "issue" and state in ("open", "confirmed", "fix_in_progress")),
+            "retest": sum(n for kind,state,n in grouped if kind == "issue" and state == "ready_for_retest")}
         if status:
             query = query.where(QualityIssue.status == status)
-        return {"items": [issue_view(session, i) for i in session.scalars(query.order_by(QualityIssue.created_at.desc(), QualityIssue.id).offset(offset).limit(limit))],
+        return {"triage_counts": triage, "items": [issue_view(session, i) for i in session.scalars(query.order_by(QualityIssue.created_at.desc(), QualityIssue.id).offset(offset).limit(limit))],
                 "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/quality/issues/{issue_id}")
@@ -193,7 +206,9 @@ def install(router, settings, database, get, serialize, create_run, runner):
             before = issue.status
             if body.status == "confirmed":
                 issue.kind = "issue"
-            issue.status, issue.owner, issue.confirmed_cause = body.status, body.owner, body.confirmed_cause
+            from agenteval.security import assign_member
+            assign_member(locked, issue, body.assignee_user_id, body.owner)
+            issue.status, issue.confirmed_cause = body.status, body.confirmed_cause
             issue.revision += 1
             locked.add(IssueEvent(issue_id=issue.id, action="developer_update", detail={"before": before, **body.model_dump()}))
             locked.flush(); value = serialize(issue)

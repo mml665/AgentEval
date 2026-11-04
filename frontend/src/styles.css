@@ -77,3 +77,17 @@ summary { cursor: pointer; line-height: 1.7; }
 .icon-button[disabled], .button[disabled] { cursor: not-allowed; }
 @media(max-width: 800px) { .task-filters .search-input { min-width: 200px; } .metric-card { min-height: 145px; } }
 @media(max-width: 600px) { .page-heading h1 { font-size: 24px; } .task-filters>* { max-width: 100%; } .task-filters .search-input { flex-basis: 100%; } .metric-card strong { font-size: 24px; } .metric-card small, .metric-top, .page-heading p { font-size: 12px; } .scope-panel { padding: 14px; } }
+.auth-switch { position: fixed; right: 24px; bottom: 20px; background: #172233; z-index: 10; }
+.personal-login { width: min(100%, 500px); margin: auto; }
+.personal-login h1 { font-size: 26px; }
+.personal-login p { color: #a6b6cb; line-height: 1.7; margin: 12px 0; font-size: 13px; }
+.session-row { display: flex; justify-content: space-between; gap: 16px; align-items: center; flex-wrap: wrap; padding: 10px 0; border-bottom: 1px solid #29394e; font-size: 13px; }
+.session-row span { overflow-wrap: anywhere; min-width: 0; }
+.triage-counts { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; font-size: 14px; }
+.triage-counts strong { color: #6cddba; margin-left: 8px; }
+.triage-counts small { color: #a6b6cb; font-size: 12px; }
+.manual-import { border: 1px solid #26364a; border-radius: 6px; padding: 10px 14px; }
+.manual-import>summary { color: #a6b6cb; font-size: 13px; }
+.test-confirmation { display: flex; align-items: flex-start; gap: 10px; font-size: 13px; line-height: 1.8; }
+.test-confirmation input { flex-shrink: 0; margin-top: 5px; }
+@media(max-width: 600px) { .auth-switch { right: 16px; bottom: 15px; } .session-row { align-items: flex-start; flex-direction: column; } }

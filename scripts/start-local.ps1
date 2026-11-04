@@ -1,4 +1,4 @@
-param([int]$Port = 8000)
+﻿param([int]$Port = 8000)
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 Push-Location -LiteralPath $repoRoot
@@ -12,7 +12,7 @@ try {
     if (-not (Test-Path -LiteralPath 'frontend/dist/index.html')) {
         throw '请先在 frontend 目录运行 npm ci 和 npm run build。'
     }
-    if (-not $env:AGENTEVAL_API_TOKEN) {
+    if ($env:AGENTEVAL_AUTH_MODE -ne 'team' -and -not $env:AGENTEVAL_API_TOKEN) {
         $envPath = Join-Path $repoRoot '.env'
         if (Test-Path -LiteralPath $envPath) {
             $tokenLine = Get-Content -LiteralPath $envPath | Where-Object { $_ -match '^AGENTEVAL_API_TOKEN=' } | Select-Object -First 1
@@ -31,7 +31,11 @@ try {
     $env:PYTHONPATH = Join-Path $repoRoot 'backend'
     & $pythonPath -m agenteval init-db
     if ($LASTEXITCODE -ne 0) { throw '数据库迁移失败。' }
-    Write-Host "打开 http://127.0.0.1:$Port ，使用 AGENTEVAL_API_TOKEN 登录。"
+    if ($env:AGENTEVAL_AUTH_MODE -eq 'team') {
+        Write-Host "打开 http://127.0.0.1:$Port ，使用已由 init-admin 初始化的个人账户登录。"
+    } else {
+        Write-Host "打开 http://127.0.0.1:$Port ，使用 AGENTEVAL_API_TOKEN 登录（共享管理员兼容模式）。"
+    }
     & $pythonPath -m agenteval serve --port $Port
     if ($LASTEXITCODE -ne 0) { throw '服务启动失败，请检查端口与配置。' }
 } finally {

@@ -43,7 +43,7 @@ def summary(row):
         "trial_scoring_coverage": row["scored"] / row["expected_scores"] if row["expected_scores"] else None,
         "updated_at": row["result_updated_at"].isoformat() if row["result_updated_at"] else None, "duration_ms": row["duration_ms"],
         "duration_scope": "recorded_attempt_latency_sum_not_wall_clock",
-        "initiator": {"id": None, "display_name": "共享团队身份（未记录个人）", "kind": "unattributed_team"}}
+        "initiator": row["Run"].initiator or {"id": None, "display_name": "共享团队身份（未记录个人）", "kind": "unattributed_team"}}
 
 
 def run_view(row, serialize):

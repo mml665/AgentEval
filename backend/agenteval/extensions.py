@@ -106,7 +106,7 @@ def install(router, settings, sessions, database, get, serialize, create_run, ru
         facts = [{"kind": r.result["evaluator_id"], "instance_id": r.instance_id,
             "status": r.result["grading_status"], "passed": r.result["passed"], "evidence": r.result["evidence"]}
             for r in session.scalars(select(EvaluationResult).filter_by(batch_id=batch.id, execution_id=execution.id))]
-        return summarize(execution.id, batch.id, execution.trace_id, facts, execution.status, execution.response, get(session, TestCase, trial.case_id).definition)
+        return summarize(execution.id, batch.id, execution.trace_id, facts, execution.status, execution.response, get(session, TestCase, trial.case_id).definition, execution.error)
 
     @router.get("/evaluations/{run_id}/export")
     def export(run_id: str, grading_batch_id: str, format: str = Query("json", pattern="^(json|csv|html)$"), session=Depends(database)):

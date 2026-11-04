@@ -217,7 +217,10 @@ async def invoke_traced(adapter, configuration, request, timeout, settings, capt
             if callback:
                 callback(started_span(root_span))
             try:
-                response = await invoke(adapter, configuration, request, timeout, settings, streamed)
+                if capture.get("_http_headers"):
+                    response = await invoke(adapter, configuration, request, timeout, settings, streamed, headers=capture["_http_headers"])
+                else:
+                    response = await invoke(adapter, configuration, request, timeout, settings, streamed)
             except AgentFailure as exc:
                 response = exc.response
                 raise

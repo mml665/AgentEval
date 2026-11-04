@@ -93,6 +93,7 @@ class Run(Entity):
     manifest: Mapped[dict] = mapped_column(JSON)
     manifest_hash: Mapped[str]
     cancel_requested: Mapped[bool] = mapped_column(default=False)
+    initiator: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class Trial(Entity):
@@ -167,6 +168,8 @@ class QualityIssue(Entity):
     status: Mapped[str] = mapped_column(default="open")
     revision: Mapped[int] = mapped_column(default=0)
     owner: Mapped[str] = mapped_column(default="")
+    assignee_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    legacy_owner: Mapped[str | None] = mapped_column(nullable=True)
     confirmed_cause: Mapped[str] = mapped_column(default="")
     evidence: Mapped[dict] = mapped_column(JSON)
     retest_batch_id: Mapped[str | None] = mapped_column(ForeignKey("grading_batches.id"), nullable=True)
@@ -193,6 +196,7 @@ class IssueEvent(Entity):
     issue_id: Mapped[str] = mapped_column(ForeignKey("quality_issues.id"), index=True)
     action: Mapped[str]
     detail: Mapped[dict] = mapped_column(JSON)
+    actor: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class RegressionCollection(Entity):
@@ -207,6 +211,7 @@ class ReleaseDecision(Entity):
     comparison_id: Mapped[str] = mapped_column(ForeignKey("regression_reports.id"))
     status: Mapped[str]
     snapshot: Mapped[dict] = mapped_column(JSON)
+    actor: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
 class OnboardingReceipt(Entity):
@@ -291,6 +296,75 @@ class ServiceHeartbeat(Entity):
     last_success: Mapped[float]
     failures: Mapped[int]
     error_code: Mapped[str | None] = mapped_column(nullable=True)
+
+
+class TeamUser(Entity):
+    __tablename__ = "team_users"
+    username: Mapped[str] = mapped_column(unique=True)
+    display_name: Mapped[str]
+    password_hash: Mapped[str]
+    is_admin: Mapped[bool] = mapped_column(default=False)
+    active: Mapped[bool] = mapped_column(default=True)
+
+
+class ProjectMembership(Entity):
+    __tablename__ = "project_memberships"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("team_users.id"), index=True)
+    role: Mapped[str]
+
+
+class UserSession(Entity):
+    __tablename__ = "user_sessions"
+    user_id: Mapped[str] = mapped_column(ForeignKey("team_users.id"), index=True)
+    token_digest: Mapped[str] = mapped_column(unique=True)
+    csrf_token: Mapped[str]
+    expires_at: Mapped[float]
+    last_seen: Mapped[float]
+    revoked: Mapped[bool] = mapped_column(default=False)
+
+
+class MachineToken(Entity):
+    __tablename__ = "machine_tokens"
+    name: Mapped[str]
+    token_digest: Mapped[str] = mapped_column(unique=True)
+    project_ids: Mapped[list] = mapped_column(JSON)
+    permission: Mapped[str]
+    expires_at: Mapped[float]
+    revoked: Mapped[bool] = mapped_column(default=False)
+
+
+class CredentialVersion(Entity):
+    __tablename__ = "credential_versions"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    name: Mapped[str]
+    env_name: Mapped[str]
+    auth_mode: Mapped[str]
+    header_name: Mapped[str]
+    fingerprint: Mapped[str]
+    revoked: Mapped[bool] = mapped_column(default=False)
+
+
+class SecurityLock(Entity):
+    __tablename__ = "security_locks"
+    name: Mapped[str] = mapped_column(unique=True)
+
+
+class LoginThrottle(Entity):
+    __tablename__ = "login_throttles"
+    key: Mapped[str] = mapped_column(unique=True)
+    window_end: Mapped[float]
+    attempts: Mapped[int]
+
+
+class SecurityAudit(Entity):
+    __tablename__ = "security_audits"
+    actor: Mapped[dict] = mapped_column(JSON)
+    action: Mapped[str]
+    project_ids: Mapped[list] = mapped_column(JSON)
+    resource_ids: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[int | None] = mapped_column(nullable=True)
 
 
 def make_database(url: str):

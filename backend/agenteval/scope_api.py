@@ -96,7 +96,9 @@ def install(router, database, get, serialize, runner, issue_view):
             for i in rows:
                 if body.action == "confirm": i.kind, i.status = "issue", "confirmed"
                 if body.action == "ignore": i.status = "ignored"
-                if body.action == "assign": i.owner = body.owner
+                if body.action == "assign":
+                    from agenteval.security import assign_member
+                    assign_member(session, i, body.assignee_user_id, body.owner)
                 i.revision += 1
                 session.add(IssueEvent(issue_id=i.id, action=f"bulk_{body.action}", detail={"note": body.note, "owner": body.owner, "target_issue_id": body.target_issue_id, "source_issue_ids": body.issue_ids}))
             session.flush()

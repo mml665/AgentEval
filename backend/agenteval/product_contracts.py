@@ -4,6 +4,7 @@ from agenteval.contracts import Contract, AgentVersionCreate, BenchmarkVersionCr
 
 
 class ConnectionCheck(Contract):
+    project_id: str | None = None
     adapter_type: Literal["http", "python", "langgraph"]
     configuration: dict
 
@@ -36,6 +37,7 @@ class IssueUpdate(Contract):
     expected_revision: int = Field(ge=0)
     status: Literal["open", "confirmed", "fix_in_progress", "ready_for_retest"]
     owner: str = Field(default="", max_length=120)
+    assignee_user_id: str | None = None
     confirmed_cause: str = Field(default="", max_length=4000)
     note: str = Field(min_length=1, max_length=4000)
 
@@ -72,6 +74,7 @@ class BulkIssues(Contract):
     expected_revisions: dict[str, int]
     action: Literal["confirm", "ignore", "assign", "merge"]
     owner: str = Field(default="", max_length=120)
+    assignee_user_id: str | None = None
     target_issue_id: str | None = None
     note: str = Field(min_length=1, max_length=4000)
 

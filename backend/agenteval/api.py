@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -38,6 +38,8 @@ def create_app(settings=None):
     settings = settings or Settings()
     engine, sessions = make_database(settings.database_url)
     runner = LocalRunner(sessions, settings)
+    from agenteval.security import Security, SecurityResponse
+    security = Security(settings, sessions)
 
     loop_health = LoopHealth("api-maintenance")
     maintenance = None
@@ -45,7 +47,7 @@ def create_app(settings=None):
     @asynccontextmanager
     async def lifespan(app):
         nonlocal maintenance
-        if len(settings.api_token) < 16:
+        if security.legacy_enabled and len(settings.api_token) < 16:
             raise RuntimeError("Set AGENTEVAL_API_TOKEN to a random token of at least 16 characters")
         coordinator = runner.coordinator
         pump = None
@@ -81,7 +83,9 @@ def create_app(settings=None):
                   description="Database-owned evaluation with fenced local/Celery workers.",
                   docs_url=None, redoc_url=None, openapi_url=None)
     app.state.sessions, app.state.engine = sessions, engine
+    app.state.security = security
     app.add_middleware(RequestLimit)
+    app.add_middleware(SecurityResponse, security=security)
 
     @app.exception_handler(IntegrityError)
     async def conflict_handler(request, exc):
@@ -92,10 +96,6 @@ def create_app(settings=None):
         # Do not echo raw input or credential-bearing request bodies.
         errors = [{"loc": list(e["loc"]), "type": e["type"], "message": e["msg"]} for e in exc.errors()]
         return JSONResponse(status_code=422, content={"code": "VALIDATION_ERROR", "details": errors})
-
-    def authorize(authorization: str = Header(default="")):
-        if not settings.api_token or not secrets.compare_digest(authorization.encode(), f"Bearer {settings.api_token}".encode()):
-            raise HTTPException(401, detail={"code": "UNAUTHORIZED"})
 
     def database():
         with sessions() as session:
@@ -118,7 +118,11 @@ def create_app(settings=None):
         session.commit()
         return serialize(entity)
 
-    router = APIRouter(prefix="/api/v1", dependencies=[Depends(authorize)])
+    router = APIRouter(prefix="/api/v1", dependencies=[Depends(security.authorize)])
+    from agenteval.team_api import install as install_team
+    install_team(app, router, security, settings, sessions, database, get, serialize)
+    from agenteval.credentials import install as install_credentials
+    install_credentials(router, settings, database, get)
 
     @app.get("/health")
     def health():
@@ -167,8 +171,11 @@ def create_app(settings=None):
         return {"items": [{"id": key, "isolation": "per_execution", "initial_state": {}} for key in ENVIRONMENTS]}
 
     @router.get("/projects")
-    def projects(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, Project, offset, limit)
+    def projects(request: Request, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
+        principal = request.state.principal
+        query = select(Project).where(True if principal.admin else Project.id.in_(list(principal.roles)))
+        return {"items": [serialize(p) for p in session.scalars(query.order_by(Project.created_at.desc(), Project.id).offset(offset).limit(limit))],
+            "total": session.scalar(select(func.count()).select_from(query.subquery())), "offset": offset, "limit": limit}
 
     @router.post("/agents", status_code=201)
     def create_agent(body: AgentCreate, session=Depends(database)):
@@ -182,6 +189,8 @@ def create_app(settings=None):
     @router.post("/agents/{agent_id}/versions", status_code=201)
     def create_agent_version(agent_id: str, body: AgentVersionCreate, session=Depends(database)):
         agent = get(session, Agent, agent_id)
+        from agenteval.credentials import validate_reference
+        validate_reference(session, settings, agent.project_id, body.configuration)
         try:
             validate_agent_config(agent.adapter_type, body.configuration, settings)
         except ValueError as exc:
@@ -252,6 +261,8 @@ def create_app(settings=None):
                 if previous.request_hash != digest(body.model_dump()):
                     raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
                 return serialize(get(session, Run, previous.run_id))
+        from agenteval.credentials import validate_reference
+        validate_reference(session, settings, agent.project_id, version.configuration)
         from agenteval.contracts import EvaluatorSpec
         specs = [EvaluatorSpec.model_validate(x) for x in profile.definition["evaluators"]]
         cases = records(session, TestCase, benchmark_version_id=benchmark_version.id)
@@ -445,8 +456,11 @@ def create_app(settings=None):
         return views(session, [get(session, Comparison, comparison_id)], serialize)[0]
 
     @router.get("/regressions")
-    def comparisons(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):
-        return page(session, Comparison, offset, limit)
+    def comparisons(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
+        query = select(Comparison)
+        if project_id: query = query.join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id)
+        return {"items": [serialize(c) for c in session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))],
+            "total": session.scalar(select(func.count()).select_from(query.subquery())), "offset": offset, "limit": limit}
 
     @router.get("/evaluations/{run_id}/work-items")
     def work_items(run_id: str, session=Depends(database)):

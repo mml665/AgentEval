@@ -2,7 +2,7 @@
 
 面向 Agent 开发团队的自动化质量评测与回归决策平台。
 
-**当前版本：0.8.0 · 最后更新：2026-11-04。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
+**当前版本：0.9.0 · 最后更新：2026-11-04。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
 
 | 能力 | 当前状态与边界 |
 |---|---|
@@ -12,6 +12,8 @@
 | Bad Case 闭环 | 默认自动收集待确认异常，确认后进入 Issue；支持手动模式、批量忽略/合并/分配、规则事实与预期/实际差异及兼容复测 |
 | 版本发布决策 | 可发布 / 阻断 / 证据不足，按 Agent、Benchmark、用例内容及显式适用版本匹配开放阻断项，冻结快照，支持 JSON/HTML 报告 |
 | Agent 接入 | HTTP、可信 Python、实际 LangGraph；真实业务双项目验收待提供资源，本地集成样例不替代该验收 |
+| 团队身份 | 个人会话、部署管理员/项目评测/只读角色，服务端项目隔离，成员分配与实际操作者审计；旧共享 Token 显式兼容 |
+| HTTP 鉴权 | 服务端版本化环境秘密引用、Bearer/Header API Key、HEAD 与显式测试分开、凭据失效及协议错误反馈 |
 | 四粒度评测 | 端到端、轨迹、逐工具调用、独立组件；无观测或不适用的指标保留未知/空值 |
 | 独立环境验证 | 平台读取隔离 SQLite 状态，快照先提交再重置；Agent 自述不能替代独立证据 |
 | 证据与恢复 | 平台来源标记、状态哈希校验、租约保护、崩溃前快照保留；未确认重置不放行门禁 |
@@ -20,12 +22,13 @@
 | Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
 | 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
 
-**本轮范围：** 按新 PRD 交付批次 A（日常操作修正）。当前仍使用共享部署 Token；真实 HTTP 鉴权凭据、个人身份/项目权限/会话、统一脱敏留存及真实业务上线验收尚未交付，仍为受控内部试用版。
+**本轮范围：** 按新 PRD 交付团队基础：HTTP 凭据接入机制、个人身份/会话/项目授权、成员负责人和机器令牌，以及插件环境最小化。AE-001 的真实业务验收待资源；AE-003 的完整脱敏、原始读取专项权限及归档恢复尚未完成，AE-004 仍待验。仍为受控内部试用版，不能标为团队正式上线。
 
-**验证记录：** 本地 128 项 Python 测试、9 项真实浏览器测试和前端生产构建通过；产品 smoke 贯通假报成功、修复复测、回归沉淀、三态发布报告及双 Agent 范围隔离。CI 还在 PostgreSQL 上执行产品 smoke；实际结果以[提交对应 Actions](https://github.com/mml665/AgentEval/actions)为准。0.5.1 的 Compose 实测单独保留，不冒充 0.8 镜像重新部署证明。真实业务双 Agent、实际 Judge 校准及用户效率指标仍待验收。
+**验证记录：** 本地 151 项 Python 测试通过，11 项真实浏览器和前端生产构建通过；新增团队公开 API smoke。CI 另在 PostgreSQL 上运行队列、产品与团队 smoke，最终全量结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。0.5.1 的 Compose 实测单独保留，不冒充 0.9 镜像重新部署证明。真实业务双 Agent、实际 Judge 校准及用户效率指标仍待验收。
 
 - [团队优化 PRD](docs/TEAM_RELEASE_OPTIMIZATION_SPEC.md)
 - [0.8 批次 A 交付与后续任务](docs/V0.8_TEAM_BATCH_A.md)
+- [0.9 团队身份、HTTP 凭据、迁移与 SDK/CI 接入](docs/V0.9_TEAM_FOUNDATION.md)
 - [团队身份/会话设计（待实现）](docs/TEAM_IDENTITY_DESIGN.md)
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -44,7 +47,7 @@
 2. 选择回答、工具、轨迹、RAG 或独立状态目标；平台生成兼容配置。
 3. 导入带预期结果的 JSON/JSONL 并执行，直接查看评分事实与 Trace。
 
-默认在评分完成的同一事务自动收集“待确认异常”，不会直接认定为开发缺陷；团队也可在 Bad Case 管理切换为仅手动导入。手动入口“跟踪本批次异常”继续保留。异常确认后进入修复与复测流程，支持批量确认、忽略、合并和分配。复测必须保留相同输入/断言及兼容策略，全部对应 Trial 通过后才能关闭；可将案例沉淀到长期回归集。首页先选择 Agent、候选版本、基线版本和 Benchmark 固定版本；Bad Case 与发布列表沿用此范围。Issue 默认仅适用于来源版本，可在详情显式选择受影响版本（版本 ID 集合，不推断后续版本）；历史问题不会无条件阻断新版本。版本比较页面可直接“生成发布评估”，或从“发布决策”选择历史比较；证据不足会保留第三态，不默认可发布。
+默认在评分完成的同一事务自动收集“待确认异常”，不会直接认定为开发缺陷；管理员也可在“团队与凭据”切换为仅手动导入。Bad Case 手动入口继续保留，首屏优先显示待确认/待修复/待复测、成员负责人和“分配给我”。异常确认后进入修复与复测流程，支持批量确认、忽略、合并和分配。复测必须保留相同输入/断言及兼容策略，全部对应 Trial 通过后才能关闭；可将案例沉淀到长期回归集。首页先选择 Agent、候选版本、基线版本和 Benchmark 固定版本；Bad Case 与发布列表沿用此范围。Issue 默认仅适用于来源版本，可在详情显式选择受影响版本（版本 ID 集合，不推断后续版本）；历史问题不会无条件阻断新版本。版本比较页面可直接“生成发布评估”，或从“发布决策”选择历史比较；证据不足会保留第三态，不默认可发布。
 
 预览演示项目为“AgentEval 0.8.0 产品闭环演示”，包含阻断、修复与可发布、探索比较证据不足的记录。它使用本地退款集成样例，不代表真实业务 Agent 已验收。首次有效评测时间 ≤15 分钟等建议指标仍需真实用户试用测量。
 
@@ -74,7 +77,7 @@ export AGENTEVAL_API_TOKEN='replace-with-your-random-token-at-least-16-character
 .venv/bin/python -m agenteval serve
 ```
 
-API 默认监听 `127.0.0.1:8000`。`/health` 和 `/ready` 为公开健康探针，业务接口均需 `Authorization: Bearer <token>`。受保护的 OpenAPI 文档位于 `/api/v1/openapi.json`，未提供 Swagger 页面。`.env.example` 是配置参考，本地命令不自动加载 `.env`，应使用环境变量。
+API 默认监听 `127.0.0.1:8000`。`/health` 和 `/ready` 为公开健康探针；业务接口接受合法会话或 Bearer 机器/兼容 Token。受保护的 OpenAPI 文档位于 `/api/v1/openapi.json`，未提供 Swagger 页面。`.env.example` 是配置参考，本地命令不自动加载 `.env`，应使用环境变量。以上命令为 legacy 兼容启动；个人账户需切换 `AGENTEVAL_AUTH_MODE=team`、关闭旧 Token、配置准确 Origin/Cookie 并由 CLI `init-admin` 一次性初始化，完整命令见 [0.9 升级说明](docs/V0.9_TEAM_FOUNDATION.md#2-开启个人账户模式)。
 
 本地模式默认以**单 API 进程**运行；独立队列模式通过多个 Worker 扩展。首次启动前执行迁移；应用启动不会隐式建表。数据库文件位于 `data/agenteval.db`，不会进入 Git。
 
@@ -186,6 +189,10 @@ $env:PYTHONPATH = 'backend'
 | 缺陷闭环 | `/api/v1/quality/issues`，支持自动异常、批次导入、批量处理、适用范围、发起/核验同 Agent 复测及回归沉淀 |
 | 发布建议及报告 | POST/GET `/api/v1/release-decisions`；GET `/api/v1/release-decisions/{id}/export` |
 | 实际支持能力 | GET `/api/v1/capabilities` |
+| 个人会话 | `/api/v1/auth/options`、`login`、`session`、`logout`、`sessions` |
+| 团队与项目成员 | `/api/v1/team/users`、`/api/v1/team/members` |
+| 机器令牌与审计 | `/api/v1/team/machines`、`/api/v1/team/audit`（管理员） |
+| HTTP 凭据与测试调用 | `/api/v1/team/credentials`；POST `/api/v1/onboarding/test-call` |
 
 列表当前使用 offset/limit。发布版本无更新接口。创建 Run 支持 `Idempotency-Key` 请求头；相同键和请求返回原 Run，不同请求返回 409。报告返回实际 `grading_batch_id`；历史查询应显式传入该 ID。
 
@@ -270,13 +277,13 @@ Profile 的 `execution.tool_faults` 可指定 `tool_name`、`call_index`、`mode
 
 真实 Judge 校准入口为 `scripts/calibrate_judge.py`，例如 `python scripts/calibrate_judge.py --output .build/judge-calibration.json --repetitions 3`。需要实际端点/模型配置；仓库种子标签尚待独立人工复核，模拟协议和离线分析不能替代真实模型一致性报告。
 
-## 升级到 0.8
+## 升级到 0.9
 
-先停止旧 API/Worker/Dispatcher 并备份数据库，前后端一起升级，运行 `python -m agenteval init-db` 至 0007，重新构建前端并启动。0.8 不新增 DDL，沿用 0007，并保留所有历史判定和快照。0007 增加 IssueScope、项目异常收集策略及记录类型；历史记录回填为来源 Agent / Benchmark / 用例内容 / 来源版本，已确认及重新开放的正式问题保留类型。迁移不回填过去未导入的失败，不改写历史运行、评分和发布快照。默认自动模式影响升级后完成的评分；需严格控制记录的团队可切换为 manual。发布评估是对固定证据的建议，不直接执行生产部署；未完整独立核验业务状态的方案会明确显示范围。
+停止旧 API/Worker/Dispatcher，确认无在途调用并备份数据库与部署秘密，在副本演练后运行 `python -m agenteval init-db` 至 **0008**。前后端同时升级，CLI 初始化首位管理员，配置成员/机器令牌再切换 team 模式。默认 legacy 仅作兼容，具有共享管理员权限，页面明确提示。历史负责人保留为 legacy_owner，旧 actor 不伪造个人；固定运行、评分和发布快照不改写。回退须恢复成套旧备份及发布包，不能套用 0.8 无 DDL 的回退结论。完整参数、Compose 映射、凭据轮换和回退限制见 [0.9 交付说明](docs/V0.9_TEAM_FOUNDATION.md)。
 
 ## 当前使用边界
 
-当前面向单可信团队。local 与 celery 模式采用相同数据库工作项、租约和结果保护协议；API 重启不撤销有效 Worker 租约。租约过期且结果未确认时标记 unknown，未知副作用不自动重跑，并保留容量待管理员核验。取消可终止本地插件进程，但中断 HTTP 等待不代表远端已停止。
+当前面向受控内部团队，team 模式提供项目角色隔离；完整数据保护与真实业务上线条件仍未齐备。local 与 celery 模式采用相同数据库工作项、租约和结果保护协议；API 重启不撤销有效 Worker 租约。租约过期且结果未确认时标记 unknown，未知副作用不自动重跑，并保留容量待管理员核验。取消可终止本地插件进程，但中断 HTTP 等待不代表远端已停止。
 
 已使用 OpenTelemetry SDK 记录本平台埋点范围内的父子 Span、事件、输入输出和耗时，并通过增量 IPC 保留失败或超时前的轨迹；黑盒内部未提供的观测不生成。输入输出尚未实现业务敏感数据的完整脱敏、制品存储和留存清理，请使用脱敏测试数据。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。
 

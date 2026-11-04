@@ -25,7 +25,7 @@ def differences(expected, actual, path="", limit=20):
     return rows
 
 
-def summarize(execution_id, batch_id, trace_id, facts, execution_status=None, response=None, case_definition=None):
+def summarize(execution_id, batch_id, trace_id, facts, execution_status=None, response=None, case_definition=None, error=None):
     titles = {"exact_match": "最终输出与参考断言", "state_assertion": "独立环境状态断言", "tool_call": "逐次工具调用规则",
         "tool_selection": "工具选择规则", "tool_arguments": "工具参数规则", "trajectory": "执行轨迹规则",
         "json_schema": "输出结构校验", "rag": "检索组件规则", "llm_judge": "模型裁判判定（需留意校准范围）"}
@@ -66,5 +66,6 @@ def summarize(execution_id, batch_id, trace_id, facts, execution_status=None, re
         "缺少有效评分证据，业务结果仍待判定。" if any(i["verdict"] == "missing" for i in items) or not items else "当前固定批次的规则均通过。")
     if execution_status in ("timed_out", "outcome_unknown"):
         headline = "执行超时或结果未知；远端业务状态仍需独立核验。"
-    return {"execution_id": execution_id, "grading_batch_id": batch_id, "trace_id": trace_id,
+    from agenteval.failure_feedback import describe
+    return {"execution_id": execution_id, "grading_batch_id": batch_id, "trace_id": trace_id, "execution_error": describe(error),
         "headline": headline, "items": items, "scope": "固定执行和评分批次的确定性事实摘要，不是根因结论；差异最多展示 20 项。"}

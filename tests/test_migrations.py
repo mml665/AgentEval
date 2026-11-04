@@ -56,3 +56,37 @@ def test_upgrade_preserves_unknown_legacy_invocation_without_redispatch(tmp_path
         assert any(i["kind"] == "grade" and i["status"] == "pending" for i in items)
     engine.dispose()
 
+
+def test_team_migration_preserves_legacy_owners_actors_and_fixed_reports(tmp_path):
+    from fastapi.testclient import TestClient
+    from sqlalchemy import select
+    from agenteval.api import create_app
+    from agenteval.config import Settings
+    from agenteval.db import QualityIssue, ReleaseDecision, Run, IssueEvent
+    from examples.product_demo import create_product_demo
+    url = "sqlite:///" + (tmp_path / "legacy-team.db").as_posix()
+    config = Config("alembic.ini"); config.attributes["database_url"] = url
+    command.upgrade(config, "head")
+    app = create_app(Settings(database_url=url, api_token="migration-fixture-token", environment_root=str(tmp_path / "env")))
+    with TestClient(app, headers={"Authorization": "Bearer migration-fixture-token"}) as client:
+        demo = create_product_demo(client)
+        with app.state.sessions() as session:
+            issue = session.get(QualityIssue, demo["issue_id"])
+            issue.owner = "Historical free-text owner"
+            frozen = {row.id: row.snapshot for row in session.scalars(select(ReleaseDecision))}
+            manifests = {row.id: row.manifest_hash for row in session.scalars(select(Run))}
+            session.commit()
+    # Remove only the new fields/tables, producing a populated 0007 database, then upgrade it.
+    command.downgrade(config, "0007")
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    engine, sessions = make_database(url)
+    with sessions() as session:
+        issue = session.get(QualityIssue, demo["issue_id"])
+        assert issue.owner == issue.legacy_owner == "Historical free-text owner"
+        assert issue.assignee_user_id is None
+        assert all(row.initiator is None and manifests[row.id] == row.manifest_hash for row in session.scalars(select(Run)))
+        assert all(row.actor is None and frozen[row.id] == row.snapshot for row in session.scalars(select(ReleaseDecision)))
+        assert all(row.actor is None for row in session.scalars(select(IssueEvent)))
+    engine.dispose()
+

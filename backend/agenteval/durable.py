@@ -149,6 +149,14 @@ class Coordinator:
                 observed.trace_id, observed.trace_completeness = row["trace_id"], "partial"
                 persist_trace(session, observed.id, [row])
         capture = {"on_span": on_span}
+        if agent["adapter_type"] == "http":
+            from agenteval.credentials import resolve, CredentialError
+            try:
+                with self.sessions() as session:
+                    capture["_http_headers"] = resolve(session, self.settings, run.project_id, agent["configuration"])
+            except CredentialError as exc:
+                self.finish(item_id, owner, epoch, "infrastructure_failed", error={"code": exc.code, "invocation": "not_started"})
+                return
         environment = None
         definition = run.manifest["profile"].get("environment")
         if definition:
@@ -180,7 +188,7 @@ class Coordinator:
             status, error = "timed_out", {"code": "AGENT_TIMEOUT", "remote_outcome": "unknown"}
         except AgentFailure as exc:
             response = exc.response
-            status, error = "agent_failed", {"code": "AGENT_PROTOCOL_OR_EXECUTION_ERROR"}
+            status, error = "agent_failed", {"code": exc.code}
         except httpx.RequestError:
             status, error = "outcome_unknown", {"code": "HTTP_TRANSPORT_ERROR", "remote_outcome": "unknown"}
         except Exception:

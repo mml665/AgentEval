@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { API } from './api';
 import type { Run } from './types';
+import { CredentialSelector } from './HttpAccess';
 import { sampleCases } from './sample';
 import { ErrorBox, Heading, Icon, Code } from './ui';
 
@@ -15,6 +16,7 @@ const goalOptions = [
 
 export function GuidedEvaluation({ api, projectId, finished }: { api: API; projectId: string; finished: (run: Run) => Promise<void> }) {
   const [step, setStep] = useState(0), [options, setOptions] = useState<Options>({ python: [], langgraph: [], environments: [] });
+  const [credential, setCredential] = useState('');
   const [adapter, setAdapter] = useState('python'), [plugin, setPlugin] = useState('example.order.v1'), [endpoint, setEndpoint] = useState('');
   const [name, setName] = useState('我的 Agent'), [projectName, setProjectName] = useState('我的质量项目');
   const [capabilities, setCapabilities] = useState<string[]>(['tool_calls', 'workflow_steps', 'retrieval_results']);
@@ -28,7 +30,7 @@ export function GuidedEvaluation({ api, projectId, finished }: { api: API; proje
     try {
       if (step === 0) {
         if (!name.trim() || (!projectId && !projectName.trim())) throw new Error('请填写项目和 Agent 名称。');
-        const check = await api.post<{ message: string }>('onboarding/check', { adapter_type: adapter, configuration: adapter === 'http' ? { endpoint } : { plugin_id: plugin } });
+        const check = await api.post<{ message: string }>('onboarding/check', { project_id: projectId || null, adapter_type: adapter, configuration: adapter === 'http' ? { endpoint, ...(credential ? { credential_version_id: credential } : {}) } : { plugin_id: plugin } });
         setConnection(check.message); setStep(1);
       } else if (step === 1) {
         if (!goals.length) throw new Error('至少选择一个评测目标。');
@@ -44,7 +46,7 @@ export function GuidedEvaluation({ api, projectId, finished }: { api: API; proje
         if (!Array.isArray(list) || !list.length) throw new Error('需要非空测试用例，包含 case_key、input、assertions。');
         const run = await api.post<Run>('onboarding/evaluations', {
           request_key: requestKey, project_id: projectId || null, project_name: projectName, agent_name: name, adapter_type: adapter,
-          agent: { version: '1.0', configuration: adapter === 'http' ? { endpoint } : { plugin_id: plugin }, capabilities, effects: 'unknown' },
+          agent: { version: '1.0', configuration: adapter === 'http' ? { endpoint, ...(credential ? { credential_version_id: credential } : {}) } : { plugin_id: plugin }, capabilities, effects: 'unknown' },
           benchmark: { version: '1.0', cases: list }, goals, environment_id: environment || null,
         });
         await finished(run);
@@ -63,6 +65,7 @@ export function GuidedEvaluation({ api, projectId, finished }: { api: API; proje
         <label className="field"><span>Agent 名称</span><input value={name} maxLength={120} onChange={e => { setName(e.target.value); change(); }}/></label>
         <label className="field"><span>接入方式</span><select value={adapter} onChange={e => { const type = e.target.value; setAdapter(type); setPlugin(type === 'langgraph' ? 'example.order.graph' : 'example.order.v1'); setCapabilities(type === 'http' ? [] : ['tool_calls', 'workflow_steps', 'retrieval_results']); change(); }}><option value="python">Python 可信插件</option><option value="langgraph">LangGraph 工作流</option><option value="http">HTTP API</option></select></label>
         {adapter === 'http' ? <label className="field"><span>Agent HTTP 地址</span><input type="url" value={endpoint} onChange={e => { setEndpoint(e.target.value); change(); }} placeholder="http://127.0.0.1:9001/invoke"/><small>需在服务端配置精确主机:端口允许清单。检查只发送 HEAD，不发送业务执行 POST。</small></label> : <label className="field"><span>部署插件</span><select value={plugin} onChange={e => { setPlugin(e.target.value); change(); }}>{options[adapter as 'python' | 'langgraph'].map(id => <option key={id}>{id}</option>)}</select></label>}
+        {adapter === 'http' && <CredentialSelector api={api} projectId={projectId} value={credential} changed={v => { setCredential(v); change(); }}/>}
         <fieldset className="goal-options"><legend>声明的观测通道（首次执行核验）</legend>{[['tool_calls', '工具调用'], ['workflow_steps', '工作流步骤'], ['retrieval_results', '检索结果']].map(([id, label]) => <label key={id}><input type="checkbox" checked={capabilities.includes(id)} onChange={e => { setCapabilities(c => e.target.checked ? [...c, id] : c.filter(x => x !== id)); change(); }}/>{label}</label>)}</fieldset></>}
       {step === 1 && <><div className="callout">{connection}</div><fieldset className="goal-options"><legend>希望验证什么？</legend>{goalOptions.map(([id, label, cap, description]) => <label key={id}><input type="checkbox" checked={goals.includes(id)} disabled={Boolean(cap && !capabilities.includes(cap))} onChange={e => { setGoals(g => e.target.checked ? [...g, id] : g.filter(x => x !== id)); change(); }}/><span><strong>{label}</strong><small>{description}{cap && !capabilities.includes(cap) && ' · 当前未声明所需观测能力'}</small></span></label>)}</fieldset>
         {goals.includes('state') && <label className="field"><span>独立环境适配器</span><select value={environment} onChange={e => { setEnvironment(e.target.value); change(); }}><option value="">选择已部署环境</option>{options.environments.map(id => <option key={id}>{id}</option>)}</select><small>当前退款样例使用隔离 SQLite；业务环境需部署自己的适配器。</small></label>}</>}

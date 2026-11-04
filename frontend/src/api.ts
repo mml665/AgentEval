@@ -5,6 +5,24 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  LOGIN_REJECTED: '用户名或密码无效，或成员已停用。',
+  LOGIN_RATE_LIMITED: '登录尝试过于频繁，请稍后重试。',
+  SESSION_EXPIRED: '会话已过期，请重新登录。',
+  SESSION_REVOKED: '会话或账号已撤销，请重新登录。',
+  CSRF_REJECTED: '安全校验未通过，请刷新会话后重试。',
+  ORIGIN_NOT_ALLOWED: '当前页面来源未获部署许可，请检查会话 Origin 配置。',
+  READ_ONLY: '当前项目为只读权限，无法执行写操作。',
+  ADMIN_REQUIRED: '此操作需要部署管理员权限。',
+  PROJECT_SCOPE_REQUIRED: '请选择有权限的项目；只有管理员可创建新项目。',
+  ASSIGNEE_REFERENCE_REQUIRED: '请选择项目成员，不能用自由文本代替真实成员身份。',
+  ASSIGNEE_NOT_ACTIVE_MEMBER: '负责人必须是当前项目的有效成员。',
+  CREDENTIAL_PROVIDER_NOT_CONFIGURED: '服务端尚未配置凭据指纹密钥，请由部署管理员配置后重试。',
+  CREDENTIAL_UNAVAILABLE: '凭据引用未能解析，请检查服务端环境变量及合法 Header 值。',
+  CREDENTIAL_REVOKED: '凭据版本已撤销，请登记新版本并发布新的 Agent 版本。',
+  CREDENTIAL_VERSION_CHANGED: '环境秘密已轮换，请登记新的凭据版本；旧引用不会自动采用新秘密。',
+  CREDENTIAL_SCOPE_MISMATCH: '凭据版本不属于当前项目。',
+  LAST_ADMIN_REQUIRED: '至少保留一名有效部署管理员。',
+
   INVALID_TIME_RANGE: '起始日期不能晚于结束日期，请调整筛选条件。',
   VALIDATION_ERROR: '参数校验失败，请核对下方字段位置。',
   INCOMPLETE_EVALUATION_SCOPE: '请选择 Agent、候选版本和 Benchmark 固定版本。',
@@ -35,12 +53,12 @@ const messages: Record<string, string> = {
   UNKNOWN_CORE_CASE: '核心用例不存在于当前数据集版本中。',
 };
 
-export function createAPI(token: string, unauthorized: () => void) {
+export function createAPI(token: string, unauthorized: () => void, csrf = '') {
   async function request<T>(path: string, body?: unknown, method = 'GET'): Promise<T> {
     let response: Response;
     try {
       response = await fetch(`/api/v1/${path}`, {
-        method, headers: { Authorization: `Bearer ${token}`, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+        method, credentials: 'same-origin', headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(csrf && method !== 'GET' ? { 'X-CSRF-Token': csrf } : {}), ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
         ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
       });
     } catch { throw new APIError(0, '无法连接服务，请检查后端是否已启动。'); }
@@ -67,7 +85,7 @@ export function createAPI(token: string, unauthorized: () => void) {
     }
   }
   async function download(path: string) {
-    const response = await fetch(`/api/v1/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    const response = await fetch(`/api/v1/${path}`, { credentials: 'same-origin', headers: token ? { Authorization: `Bearer ${token}` } : {} });
     if (!response.ok) { if (response.status === 401) unauthorized(); throw new APIError(response.status, '导出失败，请确认评分批次已完成。'); }
     const url = URL.createObjectURL(await response.blob());
     const anchor = document.createElement('a'); anchor.href = url;
