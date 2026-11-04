@@ -1,15 +1,34 @@
 import { useState } from 'react';
 import type { API } from './api';
-import type { SpecialtyMetrics } from './types';
+import type { QualitySummary, Report, SpecialtyMetrics } from './types';
 import { Code, ErrorBox, pct } from './ui';
+
+export function QualityConclusion({ value }: { value?: QualitySummary }) {
+  const names: Record<string, string> = { passed: '通过', failed: '不通过', pending: '评分未结束', insufficient: '证据不足' };
+  const key = value?.quality_status || 'insufficient';
+  return <span className={`badge status-${key === 'insufficient' ? 'inconclusive' : key}`}>{names[key]}</span>;
+}
+export function successHint(r?: Report | null) {
+  if (!r) return '暂无固定评分批次';
+  return `${r.counts.passed} 通过 / ${r.counts.passed + r.counts.failed} 已判定 / ${r.planned_trials} 计划；${r.counts.unknown} 未知 · ${r.counts.excluded} 排除 · ${Math.max(0, r.planned_trials - Object.values(r.counts).reduce((a,b) => a+b, 0))} 未评分`;
+}
+export function latencyValue(r?: Report | null) {
+  if (!r || r.latency_ms.p95 == null) return '—';
+  return r.latency_ms.min_samples == null ? '待核对阈值' : !r.latency_ms.sufficient ? '样本不足' : `${Math.round(r.latency_ms.p95)} ms`;
+}
+export function latencyHint(r?: Report | null) {
+  if (!r) return '暂无成功执行样本';
+  const m = r.latency_ms;
+  return `${m.samples} 个最终成功执行样本；${m.min_samples == null ? '历史报告未记录阈值' : `最低 ${m.min_samples} 个`}${m.p95 != null && !m.sufficient ? `；观测 P95 ${Math.round(m.p95)} ms 仅供参考` : ''}；排除失败和未完成调用，非端到端墙钟延迟`;
+}
 
 const grainNames: Record<string, string> = { e2e: '端到端结果', trajectory: '执行轨迹', tool: '单步工具', component: '组件评测' };
 export function QualityMetrics({ value }: { value?: SpecialtyMetrics }) {
   if (!value) return null;
   const scope = value.state.validation_scope;
-  return <section className="panel"><div className="panel-heading"><div><h2>专项能力与证据覆盖</h2><p>{scope === 'output_only' ? '仅验证输出与声明的过程观测；未独立核验业务环境状态。' : scope === 'independent_state' ? '已使用独立环境状态快照评分；快照在环境重置前保存。' : '已配置独立状态验证，当前证据尚不完整，请结合覆盖率判断。'}</p></div></div>
-    <div className="table-scroll"><table><thead><tr><th>评测粒度 / 规则</th><th>质量维度</th><th>机制</th><th>平均得分</th><th>通过率</th><th>证据覆盖</th></tr></thead><tbody>{Object.entries(value.granularities).flatMap(([grain, group]) => group.evaluators.length ? group.evaluators.map(item => <tr key={item.instance_id}><td>{grainNames[grain]}<small className="secondary-line mono">{item.instance_id} · {item.evaluator_id}</small></td><td>{item.metadata.quality_dimension}</td><td>{item.metadata.scoring_method}</td><td>{item.mean_score?.toFixed(3) ?? '—'}</td><td>{pct(item.pass_rate)}</td><td>{pct(item.coverage)} · {item.scored}/{item.expected}</td></tr>) : [<tr key={grain}><td>{grainNames[grain]}</td><td colSpan={5} className="muted">当前方案未配置此粒度评分</td></tr>])}</tbody></table></div>
-    <dl className="protocol-list"><div><dt>环境状态成功率 / 覆盖率</dt><dd>{pct(value.state.success_rate)} / {pct(value.state.coverage)}</dd></div><div><dt>工具调用错误率</dt><dd>{pct(value.tool.error_rate)} · {value.tool.samples} 次有状态证据的调用</dd></div><div><dt>循环率 / 恢复率</dt><dd>{pct(value.trajectory.loop_rate)} / {pct(value.trajectory.recovery_rate)}</dd></div><div><dt>超时率 / 重复试验全部成功率</dt><dd>{pct(value.reliability.timeout_rate)} / {pct(value.reliability.repeated_run_success)}</dd></div><div><dt>Agent Tokens / Task</dt><dd>{value.usage.agent_tokens_per_task?.toFixed(1) ?? '—'} · 覆盖 {pct(value.usage.agent_token_coverage)}</dd></div></dl>
+  return <section className="panel"><div className="panel-heading"><div><h2>专项评分与观测覆盖</h2><p>{scope === 'output_only' ? '仅验证输出与声明的过程观测；未独立核验业务环境状态。' : scope === 'independent_state' ? '已使用独立环境状态快照评分；快照在环境重置前保存。' : '已配置独立状态验证，当前证据尚不完整，请结合覆盖率判断。'}</p></div></div>
+    <div className="table-scroll"><table><thead><tr><th>评测粒度 / 规则</th><th>质量维度</th><th>机制</th><th>平均得分</th><th>通过率</th><th>评分覆盖</th></tr></thead><tbody>{Object.entries(value.granularities).flatMap(([grain, group]) => group.evaluators.length ? group.evaluators.map(item => <tr key={item.instance_id}><td>{grainNames[grain]}<small className="secondary-line mono">{item.instance_id} · {item.evaluator_id}</small></td><td>{item.metadata.quality_dimension}</td><td>{item.metadata.scoring_method}</td><td>{item.mean_score?.toFixed(3) ?? '—'}</td><td>{pct(item.pass_rate)}</td><td>{pct(item.coverage)} · {item.scored}/{item.expected}</td></tr>) : [<tr key={grain}><td>{grainNames[grain]}</td><td colSpan={5} className="muted">当前方案未配置此粒度评分</td></tr>])}</tbody></table></div>
+    <dl className="protocol-list"><div><dt>环境状态成功率 / 独立状态评分覆盖率</dt><dd>{pct(value.state.success_rate)} / {pct(value.state.coverage)}</dd></div><div><dt>工具调用错误率</dt><dd>{pct(value.tool.error_rate)} · {value.tool.samples} 次有状态证据的调用</dd></div><div><dt>循环率 / 恢复率</dt><dd>{pct(value.trajectory.loop_rate)} / {pct(value.trajectory.recovery_rate)}</dd></div><div><dt>超时率 / 重复试验全部成功率</dt><dd>{pct(value.reliability.timeout_rate)} / {pct(value.reliability.repeated_run_success)}</dd></div><div><dt>Agent Tokens / Task</dt><dd>{value.usage.agent_tokens_per_task?.toFixed(1) ?? '—'} · 覆盖 {pct(value.usage.agent_token_coverage)}</dd></div></dl>
     {value.state.reset_failures > 0 && <ErrorBox message={`有 ${value.state.reset_failures} 次环境重置失败，请先排查环境后再作发布判断。`}/>}</section>;
 }
 

@@ -26,6 +26,10 @@ class AgentEvalClient:
         response.raise_for_status()
         return response.json()
 
+    def list_evaluations(self, project_id, **filters):
+        """Server-side q/status/quality/version/time/sort filters plus offset/limit."""
+        return self.get("evaluations", project_id=project_id, **filters)
+
     def wait(self, run_id, timeout=120):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:

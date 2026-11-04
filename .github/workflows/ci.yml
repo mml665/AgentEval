@@ -31,6 +31,14 @@ jobs:
         with:
           name: console-browser-failures
           path: .build/playwright-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: team-console-visual-evidence
+          if-no-files-found: ignore
+          path: |
+            .build/team-a-*.png
+            .build/team-a-contrast.json
   test:
     runs-on: ubuntu-latest
     steps:

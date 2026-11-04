@@ -141,9 +141,10 @@ def install(router, database, get, serialize, runner, issue_view):
         if scope["baseline_version_id"]:
             labels["baseline"] = f"{scope['agent_name']} · v{get(session, AgentVersion, scope['baseline_version_id']).version}"
         active.sort(key=lambda i: (0 if i.kind == "issue" and i.severity == "blocking" else 1 if i.kind == "issue" else 2, str(i.created_at), i.id))
+        from agenteval.comparison_context import views
         return {"evaluation_scope": scope, "open_issues": len(formal), "pending_anomalies": sum(i.kind == "anomaly" for i in active),
             "issue_counts": dict(Counter(i.status for i, _ in records)), "blocking_issues": sum(i.severity == "blocking" for i in formal),
-            "candidate": candidate, "comparison": serialize(comparison) if comparison else None, "latest_decision": serialize(decision) if decision else None,
+            "candidate": candidate, "comparison": views(session, [comparison], serialize)[0] if comparison else None, "latest_decision": serialize(decision) if decision else None,
             "version_labels": labels, "priorities": [issue_view(session, i) for i in active[:5]],
             "scope": "所选 Agent、候选/基线版本及 Benchmark 固定版本；指标与适用问题使用同一范围。"}
 

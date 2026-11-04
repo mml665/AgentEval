@@ -11,7 +11,7 @@ from sqlalchemy import func, select
 from agenteval.adapters import validate_agent_config
 from agenteval import __version__
 from agenteval.contracts import ProfileCreate, RunCreate, digest
-from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison,
+from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison, Execution,
     GradingBatch, IssueEvent, OnboardingReceipt, ProfileVersion, Project, QualityIssue,
     RegressionCollection, ReleaseDecision, Run, TestCase, TraceSpan, Trial, TrialAssessment)
 from agenteval.evaluators import metadata, validate_case
@@ -31,10 +31,14 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return batch, run
 
     def issue_view(session, issue):
+        from agenteval.evidence_summary import summarize
         case = get(session, TestCase, issue.case_id)
         batch = get(session, GradingBatch, issue.batch_id)
+        execution = get(session, Execution, issue.execution_id)
         return {**serialize(issue), "case_key": case.case_key, "case_definition": case.definition,
-                "run_id": batch.run_id, "issue_scope": serialize(scope_for(session, issue.id))}
+                "run_id": batch.run_id, "issue_scope": serialize(scope_for(session, issue.id)),
+                "fact_summary": summarize(issue.execution_id, batch.id, execution.trace_id, issue.evidence["facts"],
+                    next((f["status"] for f in issue.evidence["facts"] if f["kind"] == "execution"), None), execution.response, case.definition)}
 
     @router.get("/onboarding/options")
     def options():
@@ -66,11 +70,12 @@ def install(router, settings, database, get, serialize, create_run, runner):
 
     @router.get("/quality/comparisons")
     def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
+        from agenteval.comparison_context import views
         query = select(Comparison).join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id)
         if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
             scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
             query = comparison_query(scope)
-        return {"items": [serialize(c) for c in session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))],
+        return {"items": views(session, list(session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))), serialize),
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.post("/onboarding/check")

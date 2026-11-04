@@ -47,6 +47,12 @@ def main():
             summary = client.get(f"/api/v1/quality/workbench/{value['project_id']}", params=params).json()
             assert summary["open_issues"] == 0 and summary["candidate"]["success_rate"] == 1
             assert summary["latest_decision"]["status"] == "ready"
+            tasks = client.get("/api/v1/evaluations", params={"project_id": value["project_id"], "q": fixed["id"], "quality": "passed"}).json()
+            assert tasks["total"] == 1 and tasks["items"][0]["quality_summary"]["quality_status"] == "passed"
+            origin_issue = client.get(f"/api/v1/quality/issues/{value['issue_id']}").json()
+            facts = client.get(f"/api/v1/executions/{origin_issue['execution_id']}/evidence-summary",
+                params={"grading_batch_id": origin_issue["batch_id"]}).json()
+            assert facts["items"][0]["rule"] == "state_assertion" and facts["items"][0]["verdict"] == "failed"
             assert client.get("/api/v1/quality/issues", params={"project_id": value["project_id"], **params}).json()["total"] == 0
             assert post("release-decisions", {"comparison_id": summary["comparison"]["id"]})["status"] == "ready"
             assert client.get(f"/api/v1/quality/project-overview/{value['project_id']}").json()["open_issues"] == 1

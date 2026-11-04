@@ -324,13 +324,25 @@ def create_app(settings=None):
         return {**serialize(run), "grading_batch_id": batch.id}
 
     @router.get("/evaluations")
-    def runs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None, session=Depends(database)):
-        return page(session, Run, offset, limit, **({"project_id": project_id} if project_id else {}))
+    def runs(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), project_id: str | None = None,
+        q: str = Query("", max_length=200), status: str | None = Query(None, pattern="^(queued|running|evaluating|cancelling|completed|cancelled|failed)$"),
+        quality: str | None = Query(None, pattern="^(pending|passed|failed|insufficient)$"), version: str | None = Query(None, max_length=120),
+        created_after: datetime | None = None, created_before: datetime | None = None,
+        sort: str = Query("newest", pattern="^(newest|oldest)$"), session=Depends(database)):
+        normalize = lambda d: d.astimezone(timezone.utc) if d and d.tzinfo else d.replace(tzinfo=timezone.utc) if d else None
+        created_after, created_before = normalize(created_after), normalize(created_before)
+        if created_after and created_before and created_after > created_before:
+            raise HTTPException(422, detail={"code": "INVALID_TIME_RANGE"})
+        from agenteval.run_queries import page_runs
+        return page_runs(session, serialize, project_id, offset, limit, q, status, quality, version, created_after, created_before, sort)
 
     @router.get("/evaluations/{run_id}")
     def run_detail(run_id: str, session=Depends(database)):
         run = get(session, Run, run_id)
-        return {**serialize(run), "grading_batches": [serialize(x) for x in records(session, GradingBatch, run_id=run_id)]}
+        from agenteval.run_queries import summary_query, run_view
+        query, _ = summary_query()
+        return {**run_view(session.execute(query.where(Run.id == run.id)).mappings().one(), serialize),
+            "grading_batches": [serialize(x) for x in records(session, GradingBatch, run_id=run_id)]}
 
     @router.post("/evaluations/{run_id}/cancel")
     def cancel(run_id: str, session=Depends(database)):
@@ -429,7 +441,8 @@ def create_app(settings=None):
 
     @router.get("/regressions/{comparison_id}")
     def comparison_detail(comparison_id: str, session=Depends(database)):
-        return serialize(get(session, Comparison, comparison_id))
+        from agenteval.comparison_context import views
+        return views(session, [get(session, Comparison, comparison_id)], serialize)[0]
 
     @router.get("/regressions")
     def comparisons(offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100), session=Depends(database)):

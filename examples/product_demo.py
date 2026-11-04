@@ -1,5 +1,6 @@
 """A public-API product walkthrough using local state fixtures, not production Agents."""
 from uuid import uuid4
+from agenteval import __version__
 
 
 def create_product_demo(client):
@@ -17,7 +18,7 @@ def create_product_demo(client):
             time.sleep(.2)
         raise RuntimeError("Product demonstration did not settle")
 
-    bad = post("onboarding/evaluations", {"request_key": str(uuid4()), "project_name": "AgentEval 0.7 产品闭环演示", "agent_name": "退款助手", "adapter_type": "python",
+    bad = post("onboarding/evaluations", {"request_key": str(uuid4()), "project_name": f"AgentEval {__version__} 产品闭环演示", "agent_name": "退款助手", "adapter_type": "python",
         "agent": {"version": "2.0", "configuration": {"plugin_id": "example.refund.liar"}}, "goals": ["answer", "state"],
         "environment_id": "sqlite.refund.v1", "gate": {"core_case_keys": ["refund-1001"]},
         "benchmark": {"version": "1.0", "cases": [{"case_key": "refund-1001", "input": {"order_id": "1001"}, "assertions": {

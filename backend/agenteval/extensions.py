@@ -54,6 +54,15 @@ def install(router, settings, sessions, database, get, serialize, create_run, ru
             totals[name] = session.scalar(select(func.count()).select_from(query.subquery()))
             offsets[name] = offset
             result[name] = [serialize(row) for row in session.scalars(query.order_by(model.created_at.desc(), model.id).offset(offset).limit(limit))]
+        from agenteval.run_queries import summary_query, run_view
+        from agenteval.comparison_context import views
+        query, _ = summary_query()
+        run_rows = session.execute(query.where(Run.id.in_([r["id"] for r in result["runs"]]))).mappings()
+        enriched = {r["Run"].id: run_view(r, serialize) for r in run_rows}
+        result["runs"] = [enriched[r["id"]] for r in result["runs"]]
+        comparisons = list(session.scalars(select(Comparison).where(Comparison.id.in_([c["id"] for c in result["comparisons"]]))))
+        contexts = {c["id"]: c for c in views(session, comparisons, serialize)}
+        result["comparisons"] = [contexts[c["id"]] for c in result["comparisons"]]
         agent_ids = [a["id"] for a in result["agents"]]
         benchmark_ids = [b["id"] for b in result["benchmarks"]]
         av_ids = [r["agent_version_id"] for r in result["runs"]]
@@ -85,6 +94,19 @@ def install(router, settings, sessions, database, get, serialize, create_run, ru
         return {"execution_id": execution.id, "trace_id": execution.trace_id, "spans": spans,
                 "completeness": execution.trace_completeness,
                 "late_result_available": execution.late_result is not None}
+
+    @router.get("/executions/{execution_id}/evidence-summary")
+    def evidence_summary(execution_id: str, grading_batch_id: str, session=Depends(database)):
+        from agenteval.evidence_summary import summarize
+        execution = get(session, Execution, execution_id)
+        trial = get(session, Trial, execution.trial_id)
+        batch = get(session, GradingBatch, grading_batch_id)
+        if batch.run_id != trial.run_id:
+            raise HTTPException(404, detail={"code": "BATCH_NOT_IN_RUN"})
+        facts = [{"kind": r.result["evaluator_id"], "instance_id": r.instance_id,
+            "status": r.result["grading_status"], "passed": r.result["passed"], "evidence": r.result["evidence"]}
+            for r in session.scalars(select(EvaluationResult).filter_by(batch_id=batch.id, execution_id=execution.id))]
+        return summarize(execution.id, batch.id, execution.trace_id, facts, execution.status, execution.response, get(session, TestCase, trial.case_id).definition)
 
     @router.get("/evaluations/{run_id}/export")
     def export(run_id: str, grading_batch_id: str, format: str = Query("json", pattern="^(json|csv|html)$"), session=Depends(database)):

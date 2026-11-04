@@ -34,7 +34,7 @@ export function ScopeProvider({ api, projectId, children }: { api: API; projectI
     finally { if (epoch === generation.current) setLoading(false); }
   }, [api, projectId]);
   useEffect(() => { current.current = null; setSelection(null); setRuns([]); void reload(); return () => { generation.current++; }; }, [reload]);
-  useEffect(() => { const refresh = () => void reload(); window.addEventListener('hashchange', refresh); return () => window.removeEventListener('hashchange', refresh); }, [reload]);
+  useEffect(() => { let previous = window.location.hash.split('?')[0]; const refresh = () => { const path = window.location.hash.split('?')[0]; if (path !== previous) { previous = path; void reload(); } }; window.addEventListener('hashchange', refresh); return () => window.removeEventListener('hashchange', refresh); }, [reload]);
   useEffect(() => { const selectRun = (event: Event) => { pendingRun.current = (event as CustomEvent<{ run_id: string }>).detail.run_id; void reload(); }; window.addEventListener('agenteval-scope-run', selectRun); const timer = setInterval(() => { if (pendingRun.current) void reload(); }, 2500); return () => { window.removeEventListener('agenteval-scope-run', selectRun); clearInterval(timer); }; }, [reload]);
   const query = selection ? new URLSearchParams(Object.entries(selection).filter(([, value]) => Boolean(value))).toString() : '';
   function select(field: keyof Selection, value: string) {

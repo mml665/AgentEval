@@ -5,6 +5,8 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  INVALID_TIME_RANGE: '起始日期不能晚于结束日期，请调整筛选条件。',
+  VALIDATION_ERROR: '参数校验失败，请核对下方字段位置。',
   INCOMPLETE_EVALUATION_SCOPE: '请选择 Agent、候选版本和 Benchmark 固定版本。',
   EVALUATION_SCOPE_MISMATCH: '所选版本必须属于当前 Agent，Benchmark 必须属于当前项目。复测应沿用同一 Agent 与 Benchmark 身份。',
   ANOMALY_TRIAGE_ONLY: '仅可批量确认或忽略待确认异常，请刷新并核对所选记录。',
