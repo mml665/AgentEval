@@ -162,6 +162,8 @@ class QualityIssue(Entity):
     title: Mapped[str]
     category: Mapped[str]
     severity: Mapped[str]
+    kind: Mapped[str] = mapped_column(default="anomaly", server_default="anomaly")
+    merged_into_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     status: Mapped[str] = mapped_column(default="open")
     revision: Mapped[int] = mapped_column(default=0)
     owner: Mapped[str] = mapped_column(default="")
@@ -169,6 +171,21 @@ class QualityIssue(Entity):
     evidence: Mapped[dict] = mapped_column(JSON)
     retest_batch_id: Mapped[str | None] = mapped_column(ForeignKey("grading_batches.id"), nullable=True)
     regression_version_id: Mapped[str | None] = mapped_column(ForeignKey("benchmark_versions.id"), nullable=True)
+
+
+class IssueScope(Entity):
+    __tablename__ = "issue_scopes"
+    issue_id: Mapped[str] = mapped_column(ForeignKey("quality_issues.id"), unique=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"), index=True)
+    benchmark_id: Mapped[str] = mapped_column(ForeignKey("benchmarks.id"), index=True)
+    case_hash: Mapped[str]
+    version_ids: Mapped[list] = mapped_column(JSON)
+
+
+class QualityPolicy(Entity):
+    __tablename__ = "quality_policies"
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), unique=True)
+    ingestion_mode: Mapped[str] = mapped_column(default="automatic")
 
 
 class IssueEvent(Entity):

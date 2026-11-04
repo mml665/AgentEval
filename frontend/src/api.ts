@@ -5,6 +5,12 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  INCOMPLETE_EVALUATION_SCOPE: '请选择 Agent、候选版本和 Benchmark 固定版本。',
+  EVALUATION_SCOPE_MISMATCH: '所选版本必须属于当前 Agent，Benchmark 必须属于当前项目。复测应沿用同一 Agent 与 Benchmark 身份。',
+  ANOMALY_TRIAGE_ONLY: '仅可批量确认或忽略待确认异常，请刷新并核对所选记录。',
+  MERGE_SCOPE_MISMATCH: '仅能合并相同 Agent、Benchmark 和用例内容的记录。',
+  INVALID_MERGE: '请至少选择两条尚未关闭、忽略或合并的记录。',
+  INACTIVE_ISSUE_SCOPE: '已关闭、忽略或合并的记录不能直接修改适用版本。',
   ENGINE_REASSESSMENT_REQUIRED: '该证据来自较旧引擎。请先在评测详情重新评分，再导入当前批次或建立新的版本比较。',
   ISSUE_REVISION_CONFLICT: '问题已被更新，请刷新后再保存。',
   INVALID_ISSUE_TRANSITION: '请按确认、修复、待复测的顺序处理；关闭状态由复测证据决定。',

@@ -54,3 +54,31 @@ class CreateRelease(Contract):
 class StartRetest(Contract):
     agent_version_id: str
     request_key: str = Field(min_length=16, max_length=128)
+
+
+class IngestionPolicy(Contract):
+    ingestion_mode: Literal["automatic", "manual"]
+
+
+class ScopeUpdate(Contract):
+    expected_revision: int = Field(ge=0)
+    version_ids: list[str] = Field(min_length=1, max_length=1000)
+    note: str = Field(min_length=1, max_length=4000)
+
+
+class BulkIssues(Contract):
+    project_id: str
+    issue_ids: list[str] = Field(min_length=1, max_length=100)
+    expected_revisions: dict[str, int]
+    action: Literal["confirm", "ignore", "assign", "merge"]
+    owner: str = Field(default="", max_length=120)
+    target_issue_id: str | None = None
+    note: str = Field(min_length=1, max_length=4000)
+
+    @model_validator(mode="after")
+    def unique_targets(self):
+        if len(set(self.issue_ids)) != len(self.issue_ids) or set(self.issue_ids) != set(self.expected_revisions):
+            raise ValueError("Unique targets and exact expected revisions required")
+        if self.action == "merge" and self.target_issue_id not in self.issue_ids:
+            raise ValueError("Merge target must be selected")
+        return self

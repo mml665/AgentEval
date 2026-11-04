@@ -202,8 +202,9 @@ test('guided evaluation diagnoses false success, tracks repair, verifies retest 
   const runId = new URL(page.url()).hash.split('/')[2];
   const runResponse = await request.get(`/api/v1/evaluations/${runId}`, { headers: { Authorization: `Bearer ${token}` } });
   const source = await runResponse.json();
-  const agent = await post('agents', { project_id: source.project_id, name: '修复后的退款图', adapter_type: 'langgraph' });
-  const av = await post(`agents/${agent.id}/versions`, { version: 'fixed', configuration: { plugin_id: 'example.refund.graph' } });
+  const allVersions = await (await request.get(`/api/v1/quality/agent-versions?project_id=${source.project_id}`, { headers: { Authorization: `Bearer ${token}` } })).json();
+  const original = allVersions.items.find((v: { id: string }) => v.id === source.agent_version_id);
+  const av = await post(`agents/${original.agent_id}/versions`, { version: 'fixed', configuration: { plugin_id: 'example.refund.python' } });
   await page.getByRole('button', { name: '跟踪本批次异常' }).click();
   await expect(page.getByRole('heading', { name: 'Bad Case 管理', exact: true })).toBeVisible();
   await page.locator('tbody tr').filter({ hasText: 'refund-1001' }).getByRole('link', { name: '分析与处理' }).click();
@@ -230,6 +231,8 @@ test('guided evaluation diagnoses false success, tracks repair, verifies retest 
   const retest = await (await request.get(`/api/v1/evaluations/${retestId}`, { headers: { Authorization: `Bearer ${token}` } })).json();
   const comparison = await post('regressions/compare', { baseline_batch_id: source.grading_batches[0].id, candidate_batch_id: retest.grading_batches[0].id });
   await page.getByRole('link', { name: '发布决策', exact: true }).click();
+  await page.getByLabel('候选版本', { exact: true }).selectOption(av.id);
+  await page.getByLabel('基线版本', { exact: true }).selectOption(source.agent_version_id);
   await page.getByLabel('选择固定版本比较').selectOption(comparison.id);
   await page.getByLabel('评估说明（可选）').fill('固定证据通过；修复已复测。');
   await page.getByRole('button', { name: '生成固定发布评估' }).click();
@@ -255,4 +258,72 @@ test('guided setup fits mobile viewport without requiring resource terminology',
   await expect.poll(() => page.locator('aside.sidebar').evaluate(e => e.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
   await page.screenshot({ path: '../.build/product-mobile-guide.png', fullPage: true });
+});
+
+test('shared Benchmark isolates two Agents, version scopes, anomalies and release decisions', async ({ page, request }) => {
+  const headers = { Authorization: `Bearer ${token}` };
+  async function post(path: string, data: unknown) {
+    const response = await request.post(`/api/v1/${path}`, { data, headers });
+    expect(response.ok(), await response.text()).toBeTruthy(); return response.json();
+  }
+  const project = await post('projects', { name: '双 Agent 范围隔离验收' });
+  const agentA = await post('agents', { project_id: project.id, name: 'Agent A', adapter_type: 'python' });
+  const oldA = await post(`agents/${agentA.id}/versions`, { version: 'old', configuration: { plugin_id: 'example.refund.liar' } });
+  const newA = await post(`agents/${agentA.id}/versions`, { version: 'fixed', configuration: { plugin_id: 'example.refund.python' } });
+  const agentB = await post('agents', { project_id: project.id, name: 'Agent B', adapter_type: 'langgraph' });
+  const verB = await post(`agents/${agentB.id}/versions`, { version: 'independent', configuration: { plugin_id: 'example.refund.graph' } });
+  const bm = await post('benchmarks', { project_id: project.id, name: '共享退款用例' });
+  const bv = await post(`benchmarks/${bm.id}/versions`, { version: '1', cases: [{ case_key: 'refund-shared', input: { order_id: '1' }, assertions: {
+    expected_output: { order_id: '1', status: 'requested' }, state: { checks: [{ path: '/refunds', expected: [{ order_id: '1', status: 'requested' }] }] } } }] });
+  const profile = await post('profile-versions', { project_id: project.id, name: '共享策略', version: '1', environment: { adapter_id: 'sqlite.refund.v1' },
+    evaluators: [{ instance_id: 'answer', id: 'exact_match' }, { instance_id: 'state', id: 'state_assertion' }] });
+  async function run(id: string) {
+    const r = await post('evaluations', { agent_version_id: id, benchmark_version_id: bv.id, profile_version_id: profile.id });
+    let completed: { grading_batches: { id: string }[] };
+    await expect.poll(async () => { const result = await (await request.get(`/api/v1/evaluations/${r.id}`, { headers })).json(); completed = result; return result.status; }).toBe('completed');
+    return completed!;
+  }
+  const oldRun = await run(oldA.id), newRun = await run(newA.id), bRun = await run(verB.id);
+  const anomalies = await (await request.get(`/api/v1/quality/issues?project_id=${project.id}`, { headers })).json();
+  const anomaly = anomalies.items[0];
+  expect(anomaly.kind).toBe('anomaly');
+  await post(`quality/issues/${anomaly.id}/update`, { expected_revision: 0, status: 'confirmed', note: '已核验旧版本失败' });
+  const cA = await post('regressions/compare', { baseline_batch_id: oldRun.grading_batches[0].id, candidate_batch_id: newRun.grading_batches[0].id });
+  await post('release-decisions', { comparison_id: cA.id, note: 'A 已修复版本' });
+  const cB = await post('regressions/compare', { baseline_batch_id: bRun.grading_batches[0].id, candidate_batch_id: bRun.grading_batches[0].id });
+  await post('release-decisions', { comparison_id: cB.id, note: 'B 独立决策' });
+  await login(page);
+  await page.getByLabel('当前项目', { exact: true }).selectOption(project.id);
+  await page.getByLabel('Agent 评测身份').selectOption(agentA.id);
+  await expect(page.locator('.metric-card').filter({ hasText: '评测通过率' }).locator('strong')).toHaveText('100%');
+  await expect(page.locator('.metric-card').filter({ hasText: '正式待处理缺陷' }).locator('strong')).toHaveText('0');
+  await expect(page.getByRole('heading', { name: '最近一次已保存的发布评估' })).toBeVisible();
+  await page.getByLabel('候选版本', { exact: true }).selectOption(oldA.id);
+  await expect(page.locator('.metric-card').filter({ hasText: '评测通过率' }).locator('strong')).toHaveText('0%');
+  await expect(page.locator('.metric-card').filter({ hasText: '正式待处理缺陷' }).locator('strong')).toHaveText('1');
+  await page.getByRole('link', { name: 'Bad Case 管理', exact: true }).click();
+  await expect(page.locator('tbody tr')).toHaveCount(1);
+  await page.locator('tbody tr').getByRole('link', { name: '分析与处理' }).click();
+  await expect(page.getByLabel('适用版本 old')).toBeChecked();
+  await expect(page.getByLabel('适用版本 fixed')).not.toBeChecked();
+  await expect(page.getByLabel('适用版本 independent')).toHaveCount(0);
+  await page.getByRole('link', { name: '质量工作台', exact: true }).click();
+  await page.getByLabel('Agent 评测身份').selectOption(agentB.id);
+  await expect(page.locator('.metric-card').filter({ hasText: '正式待处理缺陷' }).locator('strong')).toHaveText('0');
+  await expect(page.getByRole('heading', { name: '最近一次已保存的发布评估' })).toHaveCount(0);
+  await page.getByLabel('基线版本', { exact: true }).selectOption(verB.id);
+  await expect(page.getByRole('heading', { name: '最近一次已保存的发布评估' })).toBeVisible();
+  await page.getByRole('link', { name: '发布决策', exact: true }).click();
+  await expect(page.locator('tbody tr')).toHaveCount(1);
+  await expect(page.locator('tbody')).toContainText('Agent B');
+  await expect(page.locator('tbody')).not.toContainText('Agent A');
+  await page.getByRole('link', { name: 'Bad Case 管理', exact: true }).click();
+  await expect(page.getByText('当前范围暂无匹配记录')).toBeVisible();
+  await page.getByRole('link', { name: '项目总览', exact: true }).click();
+  await expect(page.locator('.metric-card').filter({ hasText: '正式待处理缺陷' }).locator('strong')).toHaveText('1');
+  await page.getByRole('link', { name: '质量工作台', exact: true }).click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy();
+  await expect.poll(() => page.locator('aside.sidebar').evaluate(e => e.getBoundingClientRect().right)).toBeLessThanOrEqual(1);
+  await page.screenshot({ path: '../.build/scope-mobile.png', fullPage: true });
 });

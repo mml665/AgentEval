@@ -17,7 +17,7 @@ def create_product_demo(client):
             time.sleep(.2)
         raise RuntimeError("Product demonstration did not settle")
 
-    bad = post("onboarding/evaluations", {"request_key": str(uuid4()), "project_name": "AgentEval 0.6 产品闭环演示", "agent_name": "退款助手", "adapter_type": "python",
+    bad = post("onboarding/evaluations", {"request_key": str(uuid4()), "project_name": "AgentEval 0.7 产品闭环演示", "agent_name": "退款助手", "adapter_type": "python",
         "agent": {"version": "2.0", "configuration": {"plugin_id": "example.refund.liar"}}, "goals": ["answer", "state"],
         "environment_id": "sqlite.refund.v1", "gate": {"core_case_keys": ["refund-1001"]},
         "benchmark": {"version": "1.0", "cases": [{"case_key": "refund-1001", "input": {"order_id": "1001"}, "assertions": {
@@ -34,8 +34,7 @@ def create_product_demo(client):
     for status in ("confirmed", "fix_in_progress", "ready_for_retest"):
         issue = post(f"quality/issues/{issue['id']}/update", {"expected_revision": issue["revision"], "status": status, "owner": "演示开发者",
             "confirmed_cause": "本地反例仅生成成功消息，没有执行退款写入。", "note": f"演示处理：{status}"})
-    graph = post("agents", {"project_id": bad["project_id"], "name": "修复后的退款工作流", "adapter_type": "langgraph"})
-    fixed_version = post(f"agents/{graph['id']}/versions", {"version": "3.0", "configuration": {"plugin_id": "example.refund.graph"}})
+    fixed_version = post(f"agents/{av['id']}/versions", {"version": "3.0", "configuration": {"plugin_id": "example.refund.python"}})
     fixed = wait(post(f"quality/issues/{issue['id']}/evaluations", {"agent_version_id": fixed_version["id"], "request_key": str(uuid4())}))
     issue = post(f"quality/issues/{issue['id']}/retest", {"expected_revision": issue["revision"], "grading_batch_id": fixed["grading_batches"][0]["id"], "note": "相同测试集和评分方案，全部 Trial 通过。"})
     assert issue["status"] == "resolved"

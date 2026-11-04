@@ -1,23 +1,25 @@
 """Quality workbench, guided evaluation, issue lifecycle and frozen release reviews."""
-from collections import Counter, defaultdict
 from copy import deepcopy
 import json
 
 import httpx
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import func, select, case as sql_case
+from fastapi.encoders import jsonable_encoder
+from sqlalchemy import func, select
 
 from agenteval.adapters import validate_agent_config
 from agenteval import __version__
 from agenteval.contracts import ProfileCreate, RunCreate, digest
-from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison, EvaluationResult,
-    Execution, GradingBatch, IssueEvent, OnboardingReceipt, ProfileVersion, Project, QualityIssue,
+from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comparison,
+    GradingBatch, IssueEvent, OnboardingReceipt, ProfileVersion, Project, QualityIssue,
     RegressionCollection, ReleaseDecision, Run, TestCase, TraceSpan, Trial, TrialAssessment)
 from agenteval.evaluators import metadata, validate_case
 from agenteval.product_contracts import (ConnectionCheck, CreateRelease, GuidedRun, ImportIssues, IssueRetest, IssueUpdate, StartRetest)
-from agenteval.quality import case_identity, diagnose, release_snapshot
+from agenteval.quality import case_identity, release_snapshot
 from agenteval.service import report
+from agenteval.issue_scopes import INACTIVE, collect_anomalies, applicable_records, scope_for
+from agenteval.scope_api import resolve_scope, comparison_query
 
 
 def install(router, settings, database, get, serialize, create_run, runner):
@@ -32,7 +34,7 @@ def install(router, settings, database, get, serialize, create_run, runner):
         case = get(session, TestCase, issue.case_id)
         batch = get(session, GradingBatch, issue.batch_id)
         return {**serialize(issue), "case_key": case.case_key, "case_definition": case.definition,
-                "run_id": batch.run_id}
+                "run_id": batch.run_id, "issue_scope": serialize(scope_for(session, issue.id))}
 
     @router.get("/onboarding/options")
     def options():
@@ -54,17 +56,20 @@ def install(router, settings, database, get, serialize, create_run, runner):
 
     @router.get("/quality/runs")
     def quality_runs(project_id: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
-        query = (select(Run, Agent.name, AgentVersion.version, Benchmark.name)
+        query = (select(Run, Agent.name, AgentVersion.version, Benchmark.name, Agent.id, Benchmark.id)
             .join(AgentVersion, AgentVersion.id == Run.agent_version_id).join(Agent, Agent.id == AgentVersion.agent_id)
             .join(BenchmarkVersion, BenchmarkVersion.id == Run.benchmark_version_id).join(Benchmark, Benchmark.id == BenchmarkVersion.benchmark_id)
             .where(Run.project_id == project_id, Run.status.in_(["completed", "cancelled"])))
-        return {"items": [{**serialize(run), "agent_label": f"{name} · v{version}", "benchmark_label": benchmark} for run, name, version, benchmark in session.execute(
+        return {"items": [{**serialize(run), "agent_label": f"{name} · v{version}", "agent_id": agent_id, "benchmark_id": benchmark_id, "benchmark_label": benchmark} for run, name, version, benchmark, agent_id, benchmark_id in session.execute(
             query.order_by(Run.created_at.desc(), Run.id).offset(offset).limit(limit))],
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/quality/comparisons")
-    def quality_comparisons(project_id: str, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
+    def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
         query = select(Comparison).join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id)
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            query = comparison_query(scope)
         return {"items": [serialize(c) for c in session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))],
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
@@ -144,35 +149,17 @@ def install(router, settings, database, get, serialize, create_run, runner):
         project_id = run.project_id
         session.rollback()
         with runner.coordinator.locked(project_id) as locked:
-            assessments = list(locked.scalars(select(TrialAssessment).where(TrialAssessment.batch_id == batch.id, TrialAssessment.verdict != "passed")))
-            existing = {i.execution_id: i for i in locked.scalars(select(QualityIssue).filter_by(batch_id=batch.id))}
-            grouped = defaultdict(list)
-            for value in locked.scalars(select(EvaluationResult).filter_by(batch_id=batch.id)):
-                grouped[value.execution_id].append(value)
-            attempts = defaultdict(list)
-            for attempt in locked.scalars(select(Execution).join(Trial, Trial.id == Execution.trial_id).where(Trial.run_id == run.id)):
-                attempts[attempt.trial_id].append(attempt.id)
-            imported = []
-            for assessment in assessments:
-                issue = existing.get(assessment.selected_execution_id)
-                if issue is None:
-                    trial = get(locked, Trial, assessment.trial_id)
-                    case = get(locked, TestCase, trial.case_id)
-                    execution = get(locked, Execution, assessment.selected_execution_id)
-                    historical_hard = [r for attempt_id in attempts[trial.id] if attempt_id != execution.id for r in grouped[attempt_id]
-                        if r.result["hard_constraint"] and r.result["passed"] is False]
-                    category, severity, evidence = diagnose(case, execution, grouped[execution.id], batch.grading_manifest["gate"]["core_case_keys"], historical_hard)
-                    issue = QualityIssue(project_id=project_id, batch_id=batch.id, execution_id=execution.id, case_id=case.id,
-                        title=case.case_key, category=category, severity=severity, evidence=evidence)
-                    locked.add(issue); locked.flush()
-                    locked.add(IssueEvent(issue_id=issue.id, action="discovered", detail={"verdict": assessment.verdict, "source_batch_id": batch.id}))
-                imported.append(serialize(issue))
+            imported = [serialize(i) for i in collect_anomalies(locked, get(locked, GradingBatch, batch.id), get(locked, Run, run.id), "manual")]
         return {"items": imported, "source_batch_id": batch.id}
 
     @router.get("/quality/issues")
-    def issues(project_id: str, status: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         get(session, Project, project_id)
         query = select(QualityIssue).where(QualityIssue.project_id == project_id)
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            ids = [i.id for i, _ in applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])]
+            query = query.where(QualityIssue.id.in_(ids))
         if status:
             query = query.where(QualityIssue.status == status)
         return {"items": [issue_view(session, i) for i in session.scalars(query.order_by(QualityIssue.created_at.desc(), QualityIssue.id).offset(offset).limit(limit))],
@@ -191,7 +178,7 @@ def install(router, settings, database, get, serialize, create_run, runner):
         project_id = issue.project_id
         session.rollback()
         transitions = {"open": {"confirmed"}, "confirmed": {"fix_in_progress"}, "fix_in_progress": {"ready_for_retest"},
-                       "ready_for_retest": {"fix_in_progress"}, "resolved": {"open"}}
+                       "ready_for_retest": {"fix_in_progress"}, "resolved": {"open"}, "ignored": {"open"}, "merged": set()}
         with runner.coordinator.locked(project_id) as locked:
             issue = get(locked, QualityIssue, issue_id)
             if issue.revision != body.expected_revision:
@@ -199,6 +186,8 @@ def install(router, settings, database, get, serialize, create_run, runner):
             if body.status != issue.status and body.status not in transitions[issue.status]:
                 raise HTTPException(409, detail={"code": "INVALID_ISSUE_TRANSITION"})
             before = issue.status
+            if body.status == "confirmed":
+                issue.kind = "issue"
             issue.status, issue.owner, issue.confirmed_cause = body.status, body.owner, body.confirmed_cause
             issue.revision += 1
             locked.add(IssueEvent(issue_id=issue.id, action="developer_update", detail={"before": before, **body.model_dump()}))
@@ -220,6 +209,9 @@ def install(router, settings, database, get, serialize, create_run, runner):
                 raise HTTPException(422, detail={"code": "INVALID_RETEST_BATCH"})
             if any(batch.grading_manifest.get(k) != origin.grading_manifest.get(k) for k in ("evaluators", "execution", "environment", "judge", "engine_version")):
                 raise HTTPException(422, detail={"code": "RETEST_POLICY_MISMATCH"})
+            issue_scope = scope_for(locked, issue.id)
+            if get(locked, AgentVersion, run.agent_version_id).agent_id != issue_scope.agent_id or get(locked, BenchmarkVersion, run.benchmark_version_id).benchmark_id != issue_scope.benchmark_id:
+                raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
             identity = issue.evidence["case_hash"]
             matching = [c.id for c in locked.scalars(select(TestCase).filter_by(benchmark_version_id=run.benchmark_version_id)) if case_identity(c.definition) == identity]
             if not matching:
@@ -239,6 +231,9 @@ def install(router, settings, database, get, serialize, create_run, runner):
         issue = get(session, QualityIssue, issue_id)
         if issue.status != "ready_for_retest":
             raise HTTPException(409, detail={"code": "ISSUE_NOT_READY_OR_STALE"})
+        issue_scope = scope_for(session, issue.id)
+        if get(session, AgentVersion, body.agent_version_id).agent_id != issue_scope.agent_id:
+            raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
         origin = get(session, Run, get(session, GradingBatch, issue.batch_id).run_id)
         run = create_run(RunCreate(agent_version_id=body.agent_version_id, benchmark_version_id=origin.benchmark_version_id,
             profile_version_id=origin.profile_version_id), tasks, body.request_key, session)
@@ -293,26 +288,35 @@ def install(router, settings, database, get, serialize, create_run, runner):
         with runner.coordinator.locked(project_id) as locked:
             comparison = get(locked, Comparison, body.comparison_id)
             candidate_batch, run = settled(locked, comparison.report["candidate_batch_id"])
-            hashes = {case_identity(c.definition) for c in locked.scalars(select(TestCase).filter_by(benchmark_version_id=run.benchmark_version_id))}
-            blockers = [{"id": i.id, "revision": i.revision, "title": i.title, "status": i.status} for i in locked.scalars(select(QualityIssue).where(
-                QualityIssue.project_id == project_id, QualityIssue.severity == "blocking", QualityIssue.status != "resolved")) if i.evidence["case_hash"] in hashes]
+            candidate_version = get(locked, AgentVersion, run.agent_version_id)
+            applicable = applicable_records(locked, project_id, candidate_version.agent_id, candidate_version.id, run.benchmark_version_id)
+            blockers = [{"id": i.id, "revision": i.revision, "title": i.title, "status": i.status, "issue_scope": jsonable_encoder(serialize(scope))}
+                for i, scope in applicable if i.kind == "issue" and i.severity == "blocking" and i.status not in INACTIVE]
             newer = locked.scalar(select(func.count()).select_from(GradingBatch).where(GradingBatch.run_id == run.id, GradingBatch.revision > candidate_batch.revision)) > 0
             baseline_batch = get(locked, GradingBatch, comparison.report["baseline_batch_id"])
             current = all(b.grading_manifest.get("engine_version") == __version__ for b in (baseline_batch, candidate_batch))
-            value = release_snapshot(comparison, blockers, newer, body.note, current)
+            baseline_run = get(locked, Run, baseline_batch.run_id)
+            same_agent = get(locked, AgentVersion, baseline_run.agent_version_id).agent_id == candidate_version.agent_id
+            value = release_snapshot(comparison, blockers, newer, body.note, current, same_agent, baseline_run.benchmark_version_id == run.benchmark_version_id)
+            value["evaluation_scope"] = {"agent_id": candidate_version.agent_id, "candidate_version_id": candidate_version.id,
+                "baseline_version_id": baseline_run.agent_version_id, "benchmark_version_id": run.benchmark_version_id,
+                "benchmark_id": get(locked, BenchmarkVersion, run.benchmark_version_id).benchmark_id}
             versions = {}
             for side in ("baseline", "candidate"):
                 side_run = get(locked, Run, comparison.report[side]["run_id"])
                 av = get(locked, AgentVersion, side_run.agent_version_id)
-                versions[side] = {"agent_name": get(locked, Agent, av.agent_id).name, "version": av.version, "version_id": av.id}
+                versions[side] = {"agent_name": get(locked, Agent, av.agent_id).name, "version": av.version, "version_id": av.id, "agent_id": av.agent_id}
             value["versions"] = versions
             decision = ReleaseDecision(project_id=project_id, comparison_id=comparison.id, status=value["status"], snapshot=value)
             locked.add(decision); locked.flush(); data = serialize(decision)
         return data
 
     @router.get("/release-decisions")
-    def release_list(project_id: str, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def release_list(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         query = select(ReleaseDecision).where(ReleaseDecision.project_id == project_id)
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            query = comparison_query(scope, decision=True).where(ReleaseDecision.project_id == project_id)
         return {"items": [serialize(d) for d in session.scalars(query.order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id).offset(offset).limit(limit))],
                 "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
@@ -333,24 +337,5 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return Response(payload, media_type="application/json" if format == "json" else "text/html", headers={
             "Content-Disposition": f'attachment; filename="release-{decision.id}.{format}"', "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"})
 
-    @router.get("/quality/workbench/{project_id}")
-    def workbench(project_id: str, session=Depends(database)):
-        get(session, Project, project_id)
-        counts = dict(session.execute(select(QualityIssue.status, func.count()).where(QualityIssue.project_id == project_id).group_by(QualityIssue.status)).all())
-        blocking = session.scalar(select(func.count()).select_from(QualityIssue).where(QualityIssue.project_id == project_id, QualityIssue.severity == "blocking", QualityIssue.status != "resolved"))
-        comparison = session.scalar(select(Comparison).join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id).order_by(Comparison.created_at.desc(), Comparison.id))
-        latest = session.scalar(select(GradingBatch).join(Run, Run.id == GradingBatch.run_id).where(Run.project_id == project_id, GradingBatch.status == "completed").order_by(GradingBatch.created_at.desc(), GradingBatch.id))
-        decision = session.scalar(select(ReleaseDecision).where(ReleaseDecision.project_id == project_id).order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id))
-        candidate = comparison.report["candidate"] if comparison else report(session, latest) if latest else None
-        version_labels = {}
-        if comparison:
-            for side in ("baseline", "candidate"):
-                side_run = get(session, Run, comparison.report[side]["run_id"])
-                av = get(session, AgentVersion, side_run.agent_version_id)
-                version_labels[side] = f"{get(session, Agent, av.agent_id).name} · v{av.version}"
-        priorities = list(session.scalars(select(QualityIssue).where(QualityIssue.project_id == project_id, QualityIssue.status != "resolved").order_by(
-            sql_case((QualityIssue.severity == "blocking", 0), (QualityIssue.severity == "warning", 1), else_=2), QualityIssue.created_at.desc(), QualityIssue.id).limit(5)))
-        return {"issue_counts": counts, "open_issues": sum(v for k, v in counts.items() if k != "resolved"), "blocking_issues": blocking, "version_labels": version_labels,
-            "candidate": candidate, "comparison": serialize(comparison) if comparison else None,
-            "latest_decision": serialize(decision) if decision else None,
-            "priorities": [issue_view(session, i) for i in priorities[:5]], "scope": "最新固定比较的候选批次；无比较时展示最新已完成批次。"}
+    from agenteval.scope_api import install as install_scopes
+    install_scopes(router, database, get, serialize, runner, issue_view)

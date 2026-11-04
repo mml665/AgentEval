@@ -17,7 +17,7 @@ def render_release(value):
                ("发布证据完整", "是" if snapshot["evidence_complete"] else "否"),
                ("开放阻断项", len(snapshot["blocking_issues"]))]
     cards = "".join(f"<div><small>{esc(key)}</small><strong>{esc(item)}</strong></div>" for key, item in metrics)
-    reason_labels = {"ENGINE_REASSESSMENT_REQUIRED": "证据来自较旧引擎，需重新评分并建立当前版本比较", "UNRESOLVED_BLOCKING_ISSUES": "同范围阻断问题尚未完成复测确认", "NEWER_GRADING_BATCH_EXISTS": "候选存在更新的评分批次，需要重新比较", "RELEASE_EVIDENCE_INCOMPLETE": "固定批次判定或评分证据不完整", "SUCCESS_RATE_THRESHOLD": "成功率或允许下降幅度不满足门禁", "HARD_CONSTRAINT_OR_CORE_CASE_FAILURE": "核心用例或硬约束失败", "EXPLORATORY_OR_INCOMPATIBLE": "探索比较或评测条件不兼容", "INCOMPLETE_OR_VARIABLE_EVIDENCE": "证据不完整或重复试验波动"}
+    reason_labels = {"BENCHMARK_SCOPE_MISMATCH": "基线与候选的 Benchmark 固定版本不同", "AGENT_SCOPE_MISMATCH": "基线和候选不属于同一 Agent 身份，不能据此做版本发布判断", "ENGINE_REASSESSMENT_REQUIRED": "证据来自较旧引擎，需重新评分并建立当前版本比较", "UNRESOLVED_BLOCKING_ISSUES": "同范围阻断问题尚未完成复测确认", "NEWER_GRADING_BATCH_EXISTS": "候选存在更新的评分批次，需要重新比较", "RELEASE_EVIDENCE_INCOMPLETE": "固定批次判定或评分证据不完整", "SUCCESS_RATE_THRESHOLD": "成功率或允许下降幅度不满足门禁", "HARD_CONSTRAINT_OR_CORE_CASE_FAILURE": "核心用例或硬约束失败", "EXPLORATORY_OR_INCOMPATIBLE": "探索比较或评测条件不兼容", "INCOMPLETE_OR_VARIABLE_EVIDENCE": "证据不完整或重复试验波动"}
     reasons = "".join(f"<li>{esc(reason_labels.get(code, code))}</li>" for code in snapshot["reasons"]) or "<li>固定比较门禁通过，证据完整，未发现同范围开放阻断项。</li>"
     issues = "".join(f"<tr><td>{esc(i['title'])}</td><td>{esc(i['status'])}</td><td>{esc(i['revision'])}</td></tr>" for i in snapshot["blocking_issues"])
     scope = (comparison["candidate"].get("specialty_metrics") or {}).get("state", {}).get("validation_scope")

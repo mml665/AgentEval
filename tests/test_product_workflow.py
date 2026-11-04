@@ -170,7 +170,7 @@ def test_release_three_states_immutable_export_and_new_grading_evidence(client, 
 def test_workbench_counts_are_project_scoped_and_not_current_resource_page(client, setup_run):
     s, run, issue = create_failed_case(client, setup_run)
     value = client.get(f"/api/v1/quality/workbench/{s['project']['id']}").json()
-    assert value["open_issues"] == 1 and value["priorities"][0]["id"] == issue["id"]
+    assert value["open_issues"] == 0 and value["pending_anomalies"] == 1 and value["priorities"][0]["id"] == issue["id"]
     other = s["post"]("projects", {"name": "Other"})
     assert client.get(f"/api/v1/quality/workbench/{other['id']}").json()["open_issues"] == 0
     assert client.get(f"/api/v1/quality/comparisons?project_id={other['id']}").json()["total"] == 0
@@ -185,9 +185,11 @@ def test_unresolved_blocker_prevents_release_until_retest_and_snapshot_stays_fro
     b = s["post"]("evaluations", s["body"])
     comparison = s["post"]("regressions/compare", {"baseline_batch_id": a["grading_batch_id"], "candidate_batch_id": b["grading_batch_id"]})
     assert comparison["report"]["gate"]["status"] == "passed"
+    issue = move_to_retest(s, issue)
+    issue = s["post"](f"quality/issues/{issue['id']}/scope", {"expected_revision": issue["revision"],
+        "version_ids": [bad["agent_version_id"], b["agent_version_id"]], "note": "Explicitly verified affected versions"})
     blocked = s["post"]("release-decisions", {"comparison_id": comparison["id"]})
     assert blocked["status"] == "blocked" and blocked["snapshot"]["blocking_issues"][0]["id"] == issue["id"]
-    issue = move_to_retest(s, issue)
     issue = s["post"](f"quality/issues/{issue['id']}/retest", {"expected_revision": issue["revision"], "grading_batch_id": b["grading_batch_id"], "note": "all corresponding trials passed"})
     assert issue["status"] == "resolved"
     assert s["post"]("release-decisions", {"comparison_id": comparison["id"]})["status"] == "ready"

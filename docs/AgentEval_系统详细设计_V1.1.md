@@ -3,7 +3,7 @@
 **文档版本：** V1.1  
 **对应产品版本：** MVP V1.0  
 **状态：** 目标设计基线；M1 实现范围与验证状态见 [构建状态](BUILD_STATUS.md)  
-**修订日期：** 2026-11-03  
+**修订日期：** 2026-11-04
 **需求依据：** [项目 PRD](AgentEval_PRD_V1.1.md)
 
 ## 1. 总体架构与部署边界
@@ -681,3 +681,16 @@ RegressionCollection 为项目指向普通 Benchmark；沉淀案例以不可变�
 工作台在服务端按项目计算总数、全局阻断优先队列和候选批次指标，避免从 UI 当前页推断全局状态。版本比较选择器使用独立分页查询读取项目全部已结束任务；旧资源管理仍保留。新增前端产品页面复用现有 Trace、证据组件和 API 令牌内存策略。
 
 产品工作流、数据边界、API、升级与验收见 [0.6 产品闭环](V0.6_PRODUCT_ACCEPTANCE.md)。单可信团队边界不变，人工负责人字段不等同于认证身份。真实用户指标和真实业务接入不由集成样例替代。
+
+
+## 22. 0.7 IssueScope 与统一评测范围（覆盖 0.6 对应实现）
+
+0007 增加 IssueScope（issue_id 唯一、agent_id、benchmark_id、case_hash、version_ids JSON），QualityPolicy（project_id 唯一、ingestion_mode），QualityIssue.kind 和 merged_into_id。IssueScope 将稳定 Agent/Benchmark 身份与输入/断言摘要关联，版本使用不可变 ID 集合，默认来源版本。迁移固定 DDL 并反射旧表回填，不导入未来 ORM；确认事件用于保留旧重新开放 Issue 类型。
+
+issue_scopes.py 提供异常采集和适用范围匹配，scope_api.py 提供统一资源归属校验、范围查询、批量治理与范围修改。Coordinator.grade 在同一 Project 锁和事务内写入 TrialAssessment、批次完成及自动异常；重复处理沿用批次/执行唯一约束。模式切换与批量处理使用相同 Project 锁；每条 revision 在变更前全部验证，合并保留来源证据、事件及目标指针。
+
+workbench 将候选固定批次、比较和决策查询限制在所选 AgentVersion 与 BenchmarkVersion；基线明确匹配，缺失基线时不回退到其他版本比较。app 中 EvaluationScope Context 在工作台、问题列表和发布列表间共享范围；切换期间清空旧数据，异步迟到结果不得覆盖新范围。项目总览使用独立 API。
+
+发布在 Project 锁内筛选相同 Agent、Benchmark、用例内容和适用版本的正式开放阻断项；发布快照使用 JSON 可序列化的范围及问题修订信息。跨 Agent 或不同 Benchmark 固定版本仅能形成 evidence insufficient 发布建议。复测校验同 Agent、同 Benchmark 身份及原有策略和用例兼容性。历史快照和历史评分不重写；新发布使用 release-2.0 策略。
+
+接口、状态机、迁移和回归边界见 [0.7 范围与异常治理](V0.7_SCOPE_ACCEPTANCE.md)。

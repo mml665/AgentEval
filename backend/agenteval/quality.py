@@ -40,13 +40,13 @@ def diagnose(case, execution, results, core_keys, historical_hard=()):
         "environment_evidence": execution.environment_evidence, "provenance": execution.evidence_provenance}
 
 
-def release_snapshot(comparison, blockers, newer_grading, note, engine_current=True):
+def release_snapshot(comparison, blockers, newer_grading, note, engine_current=True, scope_compatible=True, benchmark_compatible=True):
     report = comparison.report
     gate = report["gate"]
     reasons = list(gate["reasons"])
     evidence_complete = all(r["decision_coverage"] == 1 and r.get("trial_scoring_coverage", r["scoring_coverage"]) == 1
                             for r in (report["baseline"], report["candidate"]))
-    if not engine_current or report["mode"] != "strict" or not report["compatible"]:
+    if not scope_compatible or not benchmark_compatible or not engine_current or report["mode"] != "strict" or not report["compatible"]:
         status = "insufficient"
     elif gate["status"] == "failed" or blockers:
         status = "blocked"
@@ -62,7 +62,11 @@ def release_snapshot(comparison, blockers, newer_grading, note, engine_current=T
         reasons.append("NEWER_GRADING_BATCH_EXISTS")
     if not engine_current:
         reasons.append("ENGINE_REASSESSMENT_REQUIRED")
-    return {"schema_version": "1", "policy_version": "release-1.0", "status": status,
+    if not scope_compatible:
+        reasons.append("AGENT_SCOPE_MISMATCH")
+    if not benchmark_compatible:
+        reasons.append("BENCHMARK_SCOPE_MISMATCH")
+    return {"schema_version": "1", "policy_version": "release-2.0", "status": status,
         "comparison_id": comparison.id, "comparison": report, "reasons": reasons,
         "blocking_issues": blockers, "evidence_complete": evidence_complete, "newer_grading": newer_grading,
         "engine_current": engine_current, "note": note, "scope": "对固定版本与评分批次的发布建议，不执行部署，也不替代生产审批。"}
