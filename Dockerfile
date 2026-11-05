@@ -7,6 +7,9 @@ COPY benchmarks /build/benchmarks
 RUN npm run build
 
 FROM python:3.12-slim
+ARG SOURCE_REVISION=unknown
+LABEL org.opencontainers.image.source="https://github.com/mml665/AgentEval" \
+      org.opencontainers.image.revision=$SOURCE_REVISION
 WORKDIR /app
 COPY requirements.lock ./
 RUN pip install --no-cache-dir -r requirements.lock

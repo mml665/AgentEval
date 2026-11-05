@@ -1,0 +1,32 @@
+name: Isolated deployment recovery acceptance
+on:
+  workflow_dispatch:
+    inputs:
+      rollback_ref:
+        description: Compatible prior commit for rollback rehearsal (same schema)
+        required: true
+        default: 61a71dab8ca82ca5ad328f9fca0146f2152fb12e
+permissions:
+  contents: read
+jobs:
+  compose-recovery:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.lock
+      - name: Build, fault, recover and roll back isolated stacks
+        env:
+          ROLLBACK_REF: ${{ inputs.rollback_ref }}
+        run: python scripts/deployment_acceptance.py --project ae-${{ github.run_id }}-acceptance --rollback-ref "$ROLLBACK_REF"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: deployment-recovery-report
+          if-no-files-found: warn
+          path: .build/*-acceptance-*/report.json

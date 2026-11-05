@@ -2,7 +2,7 @@
 
 面向 Agent 开发团队的自动化质量评测与回归决策平台。
 
-**当前版本：0.11.0 · 最后更新：2026-11-05。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
+**当前版本：0.12.0 · 最后更新：2026-11-05。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
 
 | 能力 | 当前状态与边界 |
 |---|---|
@@ -26,15 +26,16 @@
 | Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
 | 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
 
-**本轮范围：** 补齐产品批次 C 的 AE-104、105、109、110、111：复用/复制、用例编辑与预检、显式基线/批次 URL、发布时效、个人草稿和未知提交恢复。历史证据与结论不改写；已有项目基线需手动确认，不按运行时间回填。仍为受控内部试用版，真实业务、Judge、用户效率与当前 Compose 全栈灾备仍待 AE-004。
+**本轮范围：** AE-004 当前发布包的独立部署/故障/备份恢复/兼容回滚验收工具及独立 CI，保留 0.11 产品闭环。真实业务 Agent、Judge 校准、用户效率和生产容量继续待验，仍为受控内部试用版。
 
-**验证记录：** 本地完整基线 174 项 Python、15 项真实浏览器及生产构建通过；最终产品/迁移/归档受影响回归与团队、产品、保护 smoke 通过。CI 另在 PostgreSQL 上验证复用、私人草稿、显式基线、用例差异、发布时效及项目恢复，最终结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。不以协议夹具或 0.5.1 的旧部署验收冒充当前真实业务/全栈灾备成果。
+**验证记录：** 0.11 基线为 174 项 Python、15 项浏览器通过；本轮新增 15 项部署工具边界回归已通过，当前镜像全栈实测结果及提交见 [0.12 运维交付](docs/V0.12_OPERATIONS.md)。流水线结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。
 
 - [团队优化 PRD](docs/TEAM_RELEASE_OPTIMIZATION_SPEC.md)
 - [0.8 批次 A 交付与后续任务](docs/V0.8_TEAM_BATCH_A.md)
 - [0.9 团队身份、HTTP 凭据、迁移与 SDK/CI 接入](docs/V0.9_TEAM_FOUNDATION.md)
 - [0.10 脱敏、原文授权、留存与签名归档恢复](docs/V0.10_EVIDENCE_PROTECTION.md)
 - [0.11 产品流程、显式基线与个人草稿](docs/V0.11_PRODUCT_COMPLETION.md)
+- [0.12 当前发布包部署与恢复验收](docs/V0.12_OPERATIONS.md)
 - [团队身份/会话与数据保护设计](docs/TEAM_IDENTITY_DESIGN.md)
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -218,20 +219,15 @@ docker compose up --build
 
 数据库密码使用 URL 安全随机字符，避免连接 URL 转义问题。API 仅映射到本机；数据库不暴露宿主端口。Redis 同样不暴露宿主端口；Worker 与 Dispatcher 等待 API 迁移及健康检查完成后启动。
 
-0.5.1 已在本机 Docker Engine 29.3.1 完成镜像构建和 API、Worker、Dispatcher、PostgreSQL、Redis 全部启动。实测停止消费者、创建排队任务、重启数据库/Redis/API、恢复消费，任务仍完成，固定状态样例成功率为 100% / 0% / 100%。这验证了排队任务恢复，不覆盖所有在途故障及生产灾备场景。
-
-可通过 `AGENTEVAL_API_PORT` 调整宿主端口，默认 8000。独立验收使用临时凭据、8139 端口及名称以 `-acceptance` 结尾的专用 Compose 项目：
+当前包的完整隔离演练由新工具负责，自动构建当前固定提交的前后端镜像和五个服务；验证重启排队、Worker SIGKILL、数据库/Redis 中断、真实团队鉴权、全库和环境卷恢复、固定报告及兼容旧包回滚。使用未被占用的新项目名，无需设置测试密钥：
 
 ```powershell
-# 设置专用 AGENTEVAL_API_TOKEN 和 POSTGRES_PASSWORD；Compose 也可从 .env 读取。
-$env:AGENTEVAL_API_PORT = '8139'
-docker compose -p agenteval-local-acceptance up -d --build
-# 脚本从环境变量读取上述凭据；只对独立验收栈执行。
-.venv/Scripts/python.exe scripts/compose_acceptance.py --project agenteval-local-acceptance
-docker compose -p agenteval-local-acceptance down
+.venv/Scripts/python.exe scripts/deployment_acceptance.py --project ae-local-012-acceptance --rollback-ref 61a71dab8ca82ca5ad328f9fca0146f2152fb12e
 ```
 
-脚本会停止消费者并重启数据库、Redis 和 API；`down` 保留数据卷。Windows 中文路径下曾遇到 BuildKit 会话共享键错误，使用临时英文目录中的同一份构建源码后完成验收，详见 [0.5.1 验收记录](docs/V0.5.1_CORE_ACCEPTANCE.md)。
+工具不读取本机 `.env`，自动生成临时凭据，API 只绑定随机本机端口；不接管已有同名容器或数据卷。Windows 中文路径自动通过固定 Git 归档暂存构建。结束后停止验收栈并保留数据卷和 `.build/<项目>-<时间>/` 备份、摘要报告；报告不含凭据，但全库/环境备份须按敏感数据管理。不要上传备份正文。
+
+工作树需先提交，旧包需和当前数据库结构兼容；未传 `--rollback-ref` 时报告明确记为未演练回滚。独立 [Deployment Recovery workflow](.github/workflows/deployment-acceptance.yml) 手动触发，不在每次 push 隐式执行故障演练。步骤和限制见 [0.12 运维交付](docs/V0.12_OPERATIONS.md)。旧 `scripts/compose_acceptance.py` 仅保留 0.5.1 排队恢复流程，其历史成果不代表当前包验收。
 
 ## 独立队列与新接入
 
