@@ -154,6 +154,23 @@ test('health, standalone component, trace timeline, export and pagination work t
   }
   await page.getByRole('link', { name: 'Agent 管理', exact: true }).click();
   await page.getByLabel('刷新数据', { exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Paged Agent 11', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '下一页', exact: true })).toBeEnabled();
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let signal!: () => void;
+  const intercepted = new Promise<void>(resolve => { signal = resolve; });
+  const resourcePath = `**/api/v1/workspace/${projectId}?*`;
+  await page.route(resourcePath, async route => { signal(); await gate; await route.continue(); });
+  const clicking = page.getByLabel('刷新数据', { exact: true }).click();
+  await intercepted;
+  await expect(page.getByRole('button', { name: '下一页', exact: true })).toBeDisabled();
+  await expect(page.getByLabel('分页', { exact: true })).toHaveAttribute('aria-busy', 'true');
+  release();
+  await clicking;
+  await expect(page.getByLabel('刷新数据', { exact: true })).toBeEnabled();
+  await expect(page.getByRole('heading', { name: 'Paged Agent 11', exact: true })).toBeVisible();
+  await page.unroute(resourcePath);
   await expect(page.locator('.resource-card')).toHaveCount(10);
   const firstPage = await page.locator('.resource-card h2').allTextContents();
   await page.getByRole('button', { name: '下一页', exact: true }).click();
