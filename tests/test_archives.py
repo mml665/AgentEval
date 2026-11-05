@@ -69,3 +69,25 @@ def test_archive_refuses_pending_project_and_absent_signing_key(tmp_path, monkey
             session.get(Run, demo["fixed_run_id"]).status = "running"; session.commit()
         with pytest.raises(ValueError, match="NOT_SETTLED"): archives.create(app.state.engine, demo["project_id"], tmp_path / "none.json", "Isolated test archive")
         assert not (tmp_path / "none.json").exists()
+
+
+def test_old_v1_archive_restores_after_schema_upgrade_with_no_private_drafts(tmp_path, monkeypatch):
+    import hashlib, hmac
+    from agenteval.contracts import canonical, digest
+    monkeypatch.setenv("AGENTEVAL_ARCHIVE_SIGNING_KEY", "fixture-archive-signing-key-only-32-characters")
+    app=create_app(Settings(database_url=migrate(tmp_path/'old-source.db'),api_token='archive-fixture-token',environment_root=str(tmp_path/'env')))
+    with TestClient(app,headers={'Authorization':'Bearer archive-fixture-token'}) as client:
+        demo=create_product_demo(client); path=tmp_path/'v2.json'
+        archives.create(app.state.engine,demo['project_id'],path,'Old archive compatibility validation')
+        value=json.loads(path.read_text(encoding='utf-8')); value['tables'].pop('baseline_settings')
+        value['manifest'].update(schema='project-archive-v1',database_revision='0009',counts={k:len(v) for k,v in value['tables'].items()},payload_hash=digest(value['tables']))
+        signed={k:v for k,v in value.items() if k!='signature'}
+        value['signature']=hmac.new(archives.key(),canonical(signed).encode(),hashlib.sha256).hexdigest()
+        old=tmp_path/'v1.json'; old.write_text(json.dumps(value),encoding='utf-8')
+        engine,_=make_database(migrate(tmp_path/'upgrade-restore.db'))
+        try:
+            archives.restore(engine,old,True)
+            restored=archives.snapshot(engine,demo['project_id'])
+            assert restored['baseline_settings']==[] and 'evaluation_drafts' not in restored
+            assert restored['release_decisions']==value['tables']['release_decisions']
+        finally: engine.dispose()

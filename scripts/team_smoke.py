@@ -76,6 +76,29 @@ def main():
                 issue = writer.get("/api/v1/quality/issues", params={"project_id": a["id"]}).json()["items"][0]
                 updated = post(writer, f"quality/issues/{issue['id']}/update", {"expected_revision": issue["revision"], "status": "confirmed", "assignee_user_id": identity["id"], "note": "Fixture failure confirmed"})
                 assert updated["assignee_user_id"] == identity["id"]
+                from uuid import uuid4
+                request_key=str(uuid4())
+                reuse={**body,"project_id":a["id"],"request_key":request_key}
+                assert post(writer,"onboarding/reuse-preview",reuse)["planned_trials"]==1
+                rerun=post(writer,"onboarding/reuse",reuse)
+                assert post(writer,"onboarding/reuse",reuse)["id"]==rerun["id"]
+                assert writer.get(f"/api/v1/onboarding/requests/{request_key}",params={"project_id":a["id"]}).json()["run"]["id"]==rerun["id"]
+                post(writer,"quality/baselines/"+a["id"],{"agent_id":agent["id"],"benchmark_version_id":bv["id"],"grading_batch_id":run["grading_batch_id"]})
+                assert writer.get("/api/v1/quality/baselines/"+a["id"]).json()["items"][0]["grading_batch_id"]==run["grading_batch_id"]
+                private={"mode":"reuse","request_key":request_key,"cases":'[{"password":"private-author-fixture"}]',"agent_version_id":av["id"],"benchmark_version_id":bv["id"],"profile_version_id":profile["id"]}
+                post(writer,"onboarding/drafts/"+a["id"],{"payload":private})
+                assert writer.get("/api/v1/onboarding/drafts/"+a["id"]).json()["payload"]["cases"]==private["cases"]
+                assert reader.get("/api/v1/onboarding/drafts/"+a["id"]).json()["payload"] is None
+                document=json.dumps([{"case_key":"one","input":{"nested":[1,{"value":True}]},"assertions":{"expected_output":"ok"}}])
+                assert post(writer,f"benchmarks/{bm['id']}/preview",{"document":document})["valid"]
+                v2=post(writer,f"benchmarks/{bm['id']}/publish",{"version":"2","document":document})
+                assert writer.get(f"/api/v1/benchmark-versions/{bv['id']}/diff",params={"other_version_id":v2["id"]}).json()["modified"]
+                comparison=post(writer,"regressions/compare",{"baseline_batch_id":run["grading_batch_id"],"candidate_batch_id":run["grading_batch_id"]})
+                decision=post(writer,"release-decisions",{"comparison_id":comparison["id"]})
+                frozen=decision["snapshot"]
+                post(writer,f"evaluations/{run['id']}/regrade",{})
+                current=writer.get("/api/v1/release-decisions/"+decision["id"]).json()
+                assert current["snapshot"]==frozen and not current["current_validity"]["current"]
                 token = post(admin, "team/machines", {"name": "CI smoke", "project_ids": [a["id"]], "permission": "evaluate", "expires_in_seconds": 600})
                 with TestClient(app, headers={"Authorization": "Bearer " + token["token"]}) as machine:
                     machine_run = post(machine, "evaluations", body)
@@ -93,7 +116,7 @@ def main():
                 assert password not in json.dumps(audits) and token["token"] not in json.dumps(audits)
             artifact = ROOT / ".build/team-smoke.json"; artifact.parent.mkdir(exist_ok=True)
             artifact.write_text(json.dumps({"database": app.state.engine.dialect.name,
-                "checks": ["personal_session", "project_isolation", "viewer_denied", "member_assignment", "run_actor", "machine_actor", "machine_revoked", "live_role_change", "logout", "audit"],
+                "checks": ["personal_session", "project_isolation", "viewer_denied", "member_assignment", "run_actor", "machine_actor", "machine_revoked", "live_role_change", "logout", "audit", "reuse_idempotency", "explicit_baseline", "private_draft", "case_publish_diff", "release_validity"],
                 "scope": "Controlled integration fixtures; not real business or current Compose recovery acceptance"}, indent=2), encoding="utf-8")
             print("Team smoke passed: sessions, project roles, scoped machine tokens, actual actors, audit and revocation")
 

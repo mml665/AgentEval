@@ -1,77 +1,54 @@
 import { useEffect, useState } from 'react';
-import type { API } from './api';
-import type { Run } from './types';
+import { APIError, type API } from './api';
+import type { AgentVersion, BenchmarkVersion, Profile, Run } from './types';
 import { CredentialSelector } from './HttpAccess';
 import { sampleCases } from './sample';
+import { CaseEditor, parseCases } from './CaseEditor';
+import { usePrivateDraft } from './usePrivateDraft';
 import { ErrorBox, Heading, Icon, Code } from './ui';
 
 interface Options { python: string[]; langgraph: string[]; environments: string[] }
-const goalOptions = [
-  ['answer', '回答正确性', '', '对照 expected_output 检查最终回答。'],
-  ['tools', '工具调用', 'tool_calls', '逐调用核验参数、结果和依赖。'],
-  ['trajectory', '执行轨迹', 'workflow_steps', '检查步骤、禁止行为及路径规则。'],
-  ['retrieval', 'RAG 检索', 'retrieval_results', '使用人工相关性标签计算 Recall / MRR / NDCG@5。'],
-  ['state', '独立状态验证', '', '通过部署好的环境适配器核验实际状态。'],
-];
+interface Preview { agent_label: string; benchmark_label: string; profile_label: string; case_count: number; planned_trials: number; execution: { repetitions: number; timeout_seconds: number; max_concurrency: number }; judge: { initial_calls: number; possible_calls_with_retry: number; budget: number } }
+const goalsList = [['answer','回答正确性',''],['tools','工具调用','tool_calls'],['trajectory','执行轨迹','workflow_steps'],['retrieval','RAG 检索','retrieval_results'],['state','独立状态验证','']];
 
 export function GuidedEvaluation({ api, projectId, finished }: { api: API; projectId: string; finished: (run: Run) => Promise<void> }) {
-  const [step, setStep] = useState(0), [options, setOptions] = useState<Options>({ python: [], langgraph: [], environments: [] });
-  const [credential, setCredential] = useState('');
-  const [adapter, setAdapter] = useState('python'), [plugin, setPlugin] = useState('example.order.v1'), [endpoint, setEndpoint] = useState('');
-  const [name, setName] = useState('我的 Agent'), [projectName, setProjectName] = useState('我的质量项目');
-  const [capabilities, setCapabilities] = useState<string[]>(['tool_calls', 'workflow_steps', 'retrieval_results']);
-  const [goals, setGoals] = useState<string[]>(['answer']), [environment, setEnvironment] = useState('');
-  const [cases, setCases] = useState(JSON.stringify(sampleCases, null, 2)), [error, setError] = useState(''), [busy, setBusy] = useState(false), [connection, setConnection] = useState('');
-  const [requestKey, setRequestKey] = useState(() => crypto.randomUUID());
-  useEffect(() => { void api.get<Options>('onboarding/options').then(setOptions).catch(e => setError(e.message)); }, [api]);
-  function change() { setRequestKey(crypto.randomUUID()); setError(''); }
-  async function next() {
-    setError(''); setBusy(true);
-    try {
-      if (step === 0) {
-        if (!name.trim() || (!projectId && !projectName.trim())) throw new Error('请填写项目和 Agent 名称。');
-        const check = await api.post<{ message: string }>('onboarding/check', { project_id: projectId || null, adapter_type: adapter, configuration: adapter === 'http' ? { endpoint, ...(credential ? { credential_version_id: credential } : {}) } : { plugin_id: plugin } });
-        setConnection(check.message); setStep(1);
-      } else if (step === 1) {
-        if (!goals.length) throw new Error('至少选择一个评测目标。');
-        if (goals.includes('state') && !environment) throw new Error('请选择独立环境适配器。');
-        if (goalOptions.some(([id, , cap]) => goals.includes(id) && cap && !capabilities.includes(cap))) throw new Error('当前声明能力不支持所选目标，请返回接入步骤检查。');
-        setStep(2);
-      } else {
-        let parsed;
-        try { parsed = JSON.parse(cases); } catch {
-          parsed = cases.split(/\r?\n/).filter(line => line.trim()).map(line => JSON.parse(line));
-        }
-        const list = Array.isArray(parsed) ? parsed : parsed.cases;
-        if (!Array.isArray(list) || !list.length) throw new Error('需要非空测试用例，包含 case_key、input、assertions。');
-        const run = await api.post<Run>('onboarding/evaluations', {
-          request_key: requestKey, project_id: projectId || null, project_name: projectName, agent_name: name, adapter_type: adapter,
-          agent: { version: '1.0', configuration: adapter === 'http' ? { endpoint, ...(credential ? { credential_version_id: credential } : {}) } : { plugin_id: plugin }, capabilities, effects: 'unknown' },
-          benchmark: { version: '1.0', cases: list }, goals, environment_id: environment || null,
-        });
-        await finished(run);
-      }
-    } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
-  }
-  function refundExample() {
-    setCases(JSON.stringify([{ case_key: 'refund-1001', input: { order_id: '1001' }, assertions: {
-      expected_output: { order_id: '1001', status: 'requested' }, state: { checks: [{ path: '/refunds', expected: [{ order_id: '1001', status: 'requested' }] }] },
-    } }], null, 2)); change();
-  }
-  return <><Heading eyebrow="FIRST EFFECTIVE EVALUATION" title="三步开始评测" description="连接 Agent、选择要验证的目标，再导入用例执行。平台会保存固定版本与证据。"/>
-    <ol className="guided-steps" aria-label="评测步骤">{['连接 Agent', '选择评测目标', '执行并分析'].map((label, i) => <li key={label} aria-current={step === i ? 'step' : undefined}><b>{i + 1}</b>{label}</li>)}</ol>
-    <section className="panel"><div className="form-body guided-form"><ErrorBox message={error}/>
-      {step === 0 && <>{!projectId && <label className="field"><span>项目名称</span><input value={projectName} maxLength={120} onChange={e => { setProjectName(e.target.value); change(); }}/></label>}
-        <label className="field"><span>Agent 名称</span><input value={name} maxLength={120} onChange={e => { setName(e.target.value); change(); }}/></label>
-        <label className="field"><span>接入方式</span><select value={adapter} onChange={e => { const type = e.target.value; setAdapter(type); setPlugin(type === 'langgraph' ? 'example.order.graph' : 'example.order.v1'); setCapabilities(type === 'http' ? [] : ['tool_calls', 'workflow_steps', 'retrieval_results']); change(); }}><option value="python">Python 可信插件</option><option value="langgraph">LangGraph 工作流</option><option value="http">HTTP API</option></select></label>
-        {adapter === 'http' ? <label className="field"><span>Agent HTTP 地址</span><input type="url" value={endpoint} onChange={e => { setEndpoint(e.target.value); change(); }} placeholder="http://127.0.0.1:9001/invoke"/><small>需在服务端配置精确主机:端口允许清单。检查只发送 HEAD，不发送业务执行 POST。</small></label> : <label className="field"><span>部署插件</span><select value={plugin} onChange={e => { setPlugin(e.target.value); change(); }}>{options[adapter as 'python' | 'langgraph'].map(id => <option key={id}>{id}</option>)}</select></label>}
-        {adapter === 'http' && <CredentialSelector api={api} projectId={projectId} value={credential} changed={v => { setCredential(v); change(); }}/>}
-        <fieldset className="goal-options"><legend>声明的观测通道（首次执行核验）</legend>{[['tool_calls', '工具调用'], ['workflow_steps', '工作流步骤'], ['retrieval_results', '检索结果']].map(([id, label]) => <label key={id}><input type="checkbox" checked={capabilities.includes(id)} onChange={e => { setCapabilities(c => e.target.checked ? [...c, id] : c.filter(x => x !== id)); change(); }}/>{label}</label>)}</fieldset></>}
-      {step === 1 && <><div className="callout">{connection}</div><fieldset className="goal-options"><legend>希望验证什么？</legend>{goalOptions.map(([id, label, cap, description]) => <label key={id}><input type="checkbox" checked={goals.includes(id)} disabled={Boolean(cap && !capabilities.includes(cap))} onChange={e => { setGoals(g => e.target.checked ? [...g, id] : g.filter(x => x !== id)); change(); }}/><span><strong>{label}</strong><small>{description}{cap && !capabilities.includes(cap) && ' · 当前未声明所需观测能力'}</small></span></label>)}</fieldset>
-        {goals.includes('state') && <label className="field"><span>独立环境适配器</span><select value={environment} onChange={e => { setEnvironment(e.target.value); change(); }}><option value="">选择已部署环境</option>{options.environments.map(id => <option key={id}>{id}</option>)}</select><small>当前退款样例使用隔离 SQLite；业务环境需部署自己的适配器。</small></label>}</>}
-      {step === 2 && <><p>将执行 {name} 的新评测。服务端会检查用例标签和所选目标是否兼容。</p><div className="button-group"><label className="button secondary file-button">导入 JSON / JSONL<input type="file" accept=".json,.jsonl" onChange={async e => { const file = e.target.files?.[0]; if (!file) return; if (file.size > 1900000) { setError('文件需小于 1.9 MB。'); return; } setCases(await file.text()); change(); }}/></label><button className="button ghost" onClick={() => { setCases(JSON.stringify(sampleCases, null, 2)); change(); }}>订单查询示例</button><button className="button ghost" onClick={refundExample}>退款状态示例</button></div>
-        <label className="field"><span>测试用例</span><textarea className="code-input" rows={14} value={cases} onChange={e => { setCases(e.target.value); change(); }}/><small>请自行确认预期结果；不会自动生成或猜测业务正确性标签。</small></label>
-        <details><summary>查看自动生成配置说明</summary><Code value={{ goals, capabilities, environment: environment || null, version_policy: '固定版本；新接入不会覆盖历史资源' }}/></details></>}
-      <div className="button-group">{step > 0 && <button className="button secondary" disabled={busy} onClick={() => { setError(''); setStep(s => s - 1); }}>上一步</button>}<button className="button primary" disabled={busy} onClick={() => void next()}>{busy ? '处理中…' : step === 0 ? '校验接入并继续' : step === 1 ? '下一步：准备测试用例' : '执行评测并查看分析'}<Icon name="arrow"/></button></div>
-    </div></section></>;
+  const source = new URLSearchParams(window.location.hash.split('?')[1] || '').get('source_run_id');
+  const [mode,setMode] = useState(source ? 'reuse' : 'new'), [step,setStep] = useState(0), [options,setOptions] = useState<Options>({ python:[],langgraph:[],environments:[] });
+  const [credential,setCredential] = useState(''), [adapter,setAdapter] = useState('python'), [plugin,setPlugin] = useState('example.order.v1'), [endpoint,setEndpoint] = useState('');
+  const [name,setName] = useState('我的 Agent'), [version,setVersion] = useState('1.0'), [projectName,setProjectName] = useState('我的质量项目');
+  const [capabilities,setCapabilities] = useState<string[]>(['tool_calls','workflow_steps','retrieval_results']), [goals,setGoals] = useState<string[]>(['answer']), [environment,setEnvironment] = useState('');
+  const [cases,setCases] = useState(JSON.stringify(sampleCases,null,2)), [execution,setExecution] = useState({ repetitions:1,timeout_seconds:30,max_concurrency:4,max_retries:0,tool_faults:[] });
+  const [avs,setAvs] = useState<(AgentVersion & { agent_name: string })[]>([]), [bvs,setBvs] = useState<BenchmarkVersion[]>([]), [profiles,setProfiles] = useState<Profile[]>([]);
+  const [av,setAv] = useState(''), [bv,setBv] = useState(''), [profile,setProfile] = useState('');
+  const [requestKey,setRequestKey] = useState<string>(() => crypto.randomUUID()), [preview,setPreview] = useState<Preview | null>(null), [unknown,setUnknown] = useState(false), [queried,setQueried] = useState(false);
+  const [error,setError] = useState(''), [busy,setBusy] = useState(false), [connection,setConnection] = useState('');
+  function change() { setRequestKey(crypto.randomUUID()); setPreview(null); setError(''); setQueried(false); }
+  const payload = { mode,step,request_key:requestKey,adapter,plugin,endpoint,credential_version_id:credential || null,name,version,capabilities,goals,environment,cases,agent_version_id:av || null,benchmark_version_id:bv || null,profile_version_id:profile || null,execution,pending_submission:unknown };
+  const draft = usePrivateDraft(api,projectId,payload,v => { setMode(String(v.mode)); setStep(Number(v.step)); setRequestKey(String(v.request_key)); setAdapter(String(v.adapter)); setPlugin(String(v.plugin)); setEndpoint(String(v.endpoint)); setCredential(String(v.credential_version_id || '')); setName(String(v.name)); setVersion(String(v.version)); setCapabilities(v.capabilities as string[]); setGoals(v.goals as string[]); setEnvironment(String(v.environment)); setCases(String(v.cases)); setAv(String(v.agent_version_id || '')); setBv(String(v.benchmark_version_id || '')); setProfile(String(v.profile_version_id || '')); if (v.execution) setExecution(v.execution as typeof execution); setUnknown(Boolean(v.pending_submission)); setQueried(false); setPreview(null); });
+  useEffect(() => { let live = true; void api.get<Options>('onboarding/options').then(v => { if (live) setOptions(v); }).catch(e => { if (live) setError(e.message); });
+    if (projectId) void Promise.all([api.all<typeof avs[number]>(`quality/agent-versions?project_id=${projectId}`),api.all<BenchmarkVersion>(`workspace-versions/${projectId}`),api.all<Profile>(`profile-versions?project_id=${projectId}`)]).then(([a,b,p]) => { if (live) { setAvs(a); setBvs(b); setProfiles(p); } }).catch(e => { if (live) setError(e.message); });
+    if (source) void api.get<{ project_id:string; agent_version_id:string; benchmark_version_id:string; profile_version_id:string }>(`evaluations/${source}/reuse-config`).then(v => { if (!live) return; if (v.project_id !== projectId) { setError('复制来源与当前项目不同。'); return; } setAv(v.agent_version_id); setBv(v.benchmark_version_id); setProfile(v.profile_version_id); }).catch(e => { if (live) setError(e.message); });
+    return () => { live = false; };
+  }, [api,projectId]);
+  function body() { return mode === 'reuse' ? { request_key:requestKey,project_id:projectId,agent_version_id:av,benchmark_version_id:bv,profile_version_id:profile } : { request_key:requestKey,project_id:projectId || null,project_name:projectName,agent_name:name,adapter_type:adapter,agent:{ version,configuration:adapter === 'http' ? { endpoint,...(credential ? { credential_version_id:credential } : {}) } : { plugin_id:plugin },capabilities,effects:'unknown' },benchmark:{ version:'1.0',cases:parseCases(cases) },goals,environment_id:environment || null,execution }; }
+  async function preflight() { setBusy(true); setError(''); try { setPreview(await api.post<Preview>(mode === 'reuse' ? 'onboarding/reuse-preview' : 'onboarding/preview',body())); } catch (e) { setPreview(null); setError((e as Error).message); } finally { setBusy(false); } }
+  async function locate() { setBusy(true); setError(''); try { const r = await api.get<{ found:boolean; run:Run }>(`onboarding/requests/${requestKey}?project_id=${projectId}`); if (r.found) { draft.clean(); await finished(r.run); } else { setQueried(true); setError('尚无已提交结果；原请求可能仍在途。可保持原配置和请求标识重试，服务端会阻止重复创建。'); } } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
+  async function submit() { if (!preview) return; setBusy(true); setError(''); let submitted=false; try { await draft.save({ ...payload,pending_submission:true }); submitted=true; const run = await api.post<Run>(mode === 'reuse' ? 'onboarding/reuse' : 'onboarding/evaluations',body()); draft.clean(); await finished(run); } catch (e) { setError((e as Error).message); if (submitted && (!(e instanceof APIError) || !e.status || e.status >= 500 || e.status === 409)) { setUnknown(true); setQueried(false); } } finally { setBusy(false); } }
+  async function next() { if (step === 2) return submit(); setBusy(true); setError(''); try { if (step === 0) { if (!name.trim() || !version.trim()) throw new Error('请填写名称和版本名。'); const check = await api.post<{ message:string }>('onboarding/check',{ project_id:projectId || null,adapter_type:adapter,configuration:adapter === 'http' ? { endpoint,...(credential ? { credential_version_id:credential } : {}) } : { plugin_id:plugin } }); setConnection(check.message); setStep(1); } else { if (!goals.length || goals.includes('state') && !environment) throw new Error('请选择目标及所需独立环境。'); setStep(2); } } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
+  function refundExample() { setCases(JSON.stringify([{ case_key:'refund-1001',input:{ order_id:'1001' },assertions:{ expected_output:{ order_id:'1001',status:'requested' },state:{ checks:[{ path:'/refunds',expected:[{ order_id:'1001',status:'requested' }] }] } } }],null,2)); change(); }
+  return <><Heading title="三步开始评测" description="连接新 Agent，或复用固定版本执行回归；提交前核对服务端预检。"/>{draft.panel}<ErrorBox message={error}/><div className="button-group"><button className={`button ${mode === 'new' ? 'primary' : 'secondary'}`} disabled={unknown || busy} onClick={() => { setMode('new'); change(); }}>接入新 Agent</button><button className={`button ${mode === 'reuse' ? 'primary' : 'secondary'}`} disabled={!projectId || unknown || busy} onClick={() => { setMode('reuse'); change(); }}>评测已有版本</button></div>
+  {unknown ? <section className="panel"><div className="form-body"><h2>提交结果尚未确认</h2><p>请求 {requestKey}，先查询原结果，不换标识重新创建。</p><button className="button primary" disabled={busy || !projectId} onClick={() => void locate()}>查询原请求结果</button>{queried && <><button className="button secondary" disabled={busy || !preview} onClick={() => void submit()}>按原请求重试</button><button className="button ghost" onClick={() => { setUnknown(false); setPreview(null); }}>返回修改配置</button></>}</div></section> : <>
+  {mode === 'new' && <ol className="guided-steps" aria-label="评测步骤">{['连接 Agent','选择评测目标','执行并分析'].map((label,i) => <li key={label} aria-current={step === i ? 'step' : undefined}><b>{i+1}</b>{label}</li>)}</ol>}
+  <section className="panel"><div className="form-body guided-form"><fieldset disabled={busy} className="workflow-fields">
+  {mode === 'reuse' ? <><p>复用不重复注册资源；复制后创建新的运行身份。如需调整执行次数、并发或超时，请先发布新的评分方案版本。</p><label className="field"><span>复用 Agent 版本</span><select value={av} onChange={e => { setAv(e.target.value); change(); }}><option value="">请选择</option>{avs.map(v => <option key={v.id} value={v.id}>{v.agent_name} · v{v.version}</option>)}</select></label><label className="field"><span>复用 Benchmark 版本</span><select value={bv} onChange={e => { setBv(e.target.value); change(); }}><option value="">请选择</option>{bvs.map(v => <option key={v.id} value={v.id}>{v.benchmark_name || 'Benchmark'} · v{v.version} · {v.case_count} 条 · {v.id.slice(0,8)}</option>)}</select></label><label className="field"><span>复用评分方案</span><select value={profile} onChange={e => { setProfile(e.target.value); change(); }}><option value="">请选择</option>{profiles.map(v => <option key={v.id} value={v.id}>{v.name} · v{v.version}</option>)}</select></label></> : <>
+  {step === 0 && <>{!projectId && <label className="field"><span>项目名称</span><input value={projectName} onChange={e => { setProjectName(e.target.value); change(); }}/></label>}<div className="form-grid"><label className="field"><span>Agent 名称</span><input value={name} maxLength={120} onChange={e => { setName(e.target.value); change(); }}/></label><label className="field"><span>Agent 版本名</span><input value={version} maxLength={64} onChange={e => { setVersion(e.target.value); change(); }}/></label></div><label className="field"><span>接入方式</span><select value={adapter} onChange={e => { const type=e.target.value; setAdapter(type); setPlugin(type === 'langgraph' ? 'example.order.graph' : 'example.order.v1'); setCapabilities(type === 'http' ? [] : ['tool_calls','workflow_steps','retrieval_results']); change(); }}><option value="python">Python 可信插件</option><option value="langgraph">LangGraph 工作流</option><option value="http">HTTP API</option></select></label>
+  {adapter === 'http' ? <><label className="field"><span>Agent HTTP 地址</span><input type="url" value={endpoint} onChange={e => { setEndpoint(e.target.value); change(); }}/><small>仅 HEAD 检查，须配置精确允许清单。</small></label><CredentialSelector api={api} projectId={projectId} value={credential} changed={v => { setCredential(v); change(); }}/></> : <label className="field"><span>部署插件</span><select value={plugin} onChange={e => { setPlugin(e.target.value); change(); }}>{options[adapter as 'python'|'langgraph'].map(id => <option key={id}>{id}</option>)}</select></label>}
+  <fieldset className="goal-options"><legend>声明的观测通道（首次执行核验）</legend>{[['tool_calls','工具调用'],['workflow_steps','工作流步骤'],['retrieval_results','检索结果']].map(([id,label]) => <label key={id}><input type="checkbox" checked={capabilities.includes(id)} onChange={e => { setCapabilities(c => e.target.checked ? [...c,id] : c.filter(x => x !== id)); change(); }}/>{label}</label>)}</fieldset></>}
+  {step === 1 && <><div className="callout">{connection}</div><fieldset className="goal-options"><legend>希望验证什么？</legend>{goalsList.map(([id,label,cap]) => <label key={id}><input type="checkbox" checked={goals.includes(id)} disabled={Boolean(cap && !capabilities.includes(cap))} onChange={e => { setGoals(g => e.target.checked ? [...g,id] : g.filter(x => x !== id)); change(); }}/><span><strong>{label}</strong></span></label>)}</fieldset>{goals.includes('state') && <label className="field"><span>独立环境适配器</span><select value={environment} onChange={e => { setEnvironment(e.target.value); change(); }}><option value="">请选择</option>{options.environments.map(id => <option key={id}>{id}</option>)}</select></label>}</>}
+  {step === 2 && <><div className="button-group"><label className="button secondary file-button">导入 JSON / JSONL<input type="file" accept=".json,.jsonl" onChange={async e => { const f=e.target.files?.[0]; if (!f) return; if (f.size > 1900000) return setError('文件需小于 1.9 MB。'); setCases(await f.text()); change(); }}/></label><button className="button ghost" onClick={() => { setCases(JSON.stringify(sampleCases,null,2)); change(); }}>订单查询示例</button><button className="button ghost" onClick={refundExample}>退款状态示例</button></div><label className="field"><span>测试用例</span><textarea className="code-input" rows={10} value={cases} onChange={e => { setCases(e.target.value); change(); }}/></label><CaseEditor text={cases} changed={v => { setCases(v); change(); }}/><div className="form-grid three">{[['repetitions','重复次数',1,10],['max_concurrency','执行并发',1,16],['timeout_seconds','执行超时（秒）',0.1,300]].map(([key,label,min,max]) => <label className="field" key={key}><span>{label}</span><input type="number" min={min} max={max} step={key === 'timeout_seconds' ? 0.1 : 1} value={execution[key as keyof typeof execution] as number} onChange={e => { setExecution(v => ({...v,[key]:Number(e.target.value)})); change(); }}/></label>)}</div></>}
+  </>}</fieldset>
+  {(mode === 'reuse' || step === 2) && <><button className="button secondary" disabled={busy} onClick={() => void preflight()}>预检并核对配置</button>{preview && <div className="callout"><div><h3>提交前配置确认</h3><p>{preview.agent_label} · {preview.benchmark_label} · {preview.profile_label}</p><p>有效用例 {preview.case_count} 条 · 计划 Trial {preview.planned_trials} 次 · 重复 {preview.execution.repetitions} · 并发 {preview.execution.max_concurrency} · 超时 {preview.execution.timeout_seconds}s</p><p>预计 Judge 初始调用 {preview.judge.initial_calls}，含重试最多 {preview.judge.possible_calls_with_retry}；预算 {preview.judge.budget}，并非费用估算。</p><details><summary>查看固定配置</summary><Code value={preview}/></details></div></div>}</>}
+  <div className="button-group">{mode === 'new' && step > 0 && <button className="button secondary" disabled={busy} onClick={() => setStep(s => s-1)}>上一步</button>}<button className="button primary" disabled={busy || (mode === 'reuse' || step === 2) && !preview} onClick={() => void (mode === 'reuse' ? submit() : next())}>{busy ? '处理中…' : mode === 'reuse' ? '执行复用评测' : step === 0 ? '校验接入并继续' : step === 1 ? '下一步：准备测试用例' : '执行评测并查看分析'}<Icon name="arrow"/></button></div>
+  </div></section></>}
+  </>;
 }

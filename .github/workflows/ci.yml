@@ -41,6 +41,7 @@ jobs:
             .build/team-a-contrast.json
             .build/team-b-*.png
             .build/protection-*.png
+            .build/workflow-*.png
   test:
     runs-on: ubuntu-latest
     steps:

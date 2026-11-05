@@ -92,3 +92,9 @@ summary { cursor: pointer; line-height: 1.7; }
 .test-confirmation input { flex-shrink: 0; margin-top: 5px; }
 @media(max-width: 600px) { .auth-switch { right: 16px; bottom: 15px; } .session-row { align-items: flex-start; flex-direction: column; } }
 .view-protection-note { font-size: 12px; color: #b3c3d7; line-height: 1.7; margin: 0 0 16px; }
+.workflow-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.draft-controls { margin-bottom: 16px; }
+.draft-controls button { margin: 0 10px 8px 0; }
+.case-editor { padding: 12px 0; }
+.case-editor td { overflow-wrap: anywhere; max-width: 320px; }
+.scope-panel details { margin-top: 12px; }

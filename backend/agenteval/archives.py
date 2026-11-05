@@ -13,7 +13,7 @@ from agenteval.db import Base
 
 # Identity and live infrastructure are deliberately excluded. Restored projects have no grants/sessions.
 EXCLUDED = {"team_users", "project_memberships", "machine_tokens", "user_sessions", "login_throttles",
-    "security_locks", "service_heartbeats", "evidence_grants"}
+    "security_locks", "service_heartbeats", "evidence_grants", "evaluation_drafts"}
 TABLES = [t for t in Base.metadata.sorted_tables if t.name not in EXCLUDED]
 
 
@@ -70,7 +70,7 @@ def create(engine, project_id, destination, reason):
     signing_key = key()
     if len(reason.strip()) < 8: raise ValueError("ARCHIVE_REASON_REQUIRED")
     data = snapshot(engine, project_id)
-    signed = {"manifest": {"schema": "project-archive-v1", "database_revision": "0009", "engine_version": __version__,
+    signed = {"manifest": {"schema": "project-archive-v2", "database_revision": "0010", "engine_version": __version__,
         "project_id": project_id, "created_at": datetime.now().astimezone().isoformat(), "reason": reason.strip(),
         "counts": {name: len(rows) for name,rows in data.items()}, "payload_hash": digest(data),
         "retention": "Non-destructive; all original rows and fixed-report references remain."}, "tables": data}
@@ -93,19 +93,22 @@ def verify(source):
     expected = hmac.new(key(), canonical(signed).encode(), hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, str(value.get("signature", ""))): raise ValueError("ARCHIVE_SIGNATURE_MISMATCH")
     manifest, tables = value["manifest"], value["tables"]
-    if manifest["schema"] != "project-archive-v1" or manifest["database_revision"] != "0009": raise ValueError("ARCHIVE_SCHEMA_MISMATCH")
+    if (manifest["schema"], manifest["database_revision"]) not in (("project-archive-v1", "0009"), ("project-archive-v2", "0010")): raise ValueError("ARCHIVE_SCHEMA_MISMATCH")
     if digest(tables) != manifest["payload_hash"] or {k:len(v) for k,v in tables.items()} != manifest["counts"]: raise ValueError("ARCHIVE_CONTENT_MISMATCH")
-    if set(tables) != {t.name for t in TABLES}: raise ValueError("ARCHIVE_TABLE_MISMATCH")
+    expected_tables = {t.name for t in TABLES}
+    if manifest["schema"] == "project-archive-v1": expected_tables -= {"baseline_settings"}
+    if set(tables) != expected_tables: raise ValueError("ARCHIVE_TABLE_MISMATCH")
     return value
 
 
 def restore(engine, source, confirm_isolated=False):
     if not confirm_isolated: raise ValueError("ISOLATED_RESTORE_CONFIRMATION_REQUIRED")
     archive = verify(source)
+    if archive["manifest"]["schema"] == "project-archive-v1": archive["tables"]["baseline_settings"] = []
     # One transaction: collision/constraint errors roll back the entire import; no merge, delete or overwrite.
     with engine.begin() as conn:
         if engine.dialect.name == "sqlite": conn.exec_driver_sql("PRAGMA defer_foreign_keys=ON")
-        if conn.exec_driver_sql("select version_num from alembic_version").scalar() != "0009": raise ValueError("RESTORE_SCHEMA_MISMATCH")
+        if conn.exec_driver_sql("select version_num from alembic_version").scalar() != "0010": raise ValueError("RESTORE_SCHEMA_MISMATCH")
         for table in TABLES:
             if table.name != "security_audits" and conn.execute(select(table.c.id).limit(1)).first(): raise ValueError("RESTORE_REQUIRES_EMPTY_BUSINESS_DATABASE")
         # Comparisons have a JSON-only dependency and must precede ReleaseDecision.

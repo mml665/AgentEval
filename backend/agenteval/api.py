@@ -265,47 +265,9 @@ def create_app(settings=None):
                 if previous.request_hash != digest(body.model_dump()):
                     raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
                 return serialize(get(session, Run, previous.run_id))
-        from agenteval.credentials import validate_reference
-        validate_reference(session, settings, agent.project_id, version.configuration)
-        from agenteval.contracts import EvaluatorSpec
-        specs = [EvaluatorSpec.model_validate(x) for x in profile.definition["evaluators"]]
+        from agenteval.preflight import prepare
+        prepare(session, settings, body, get)
         cases = records(session, TestCase, benchmark_version_id=benchmark_version.id)
-        if agent.adapter_type == "component":
-            from agenteval.components import COMPONENTS
-            from jsonschema import Draft202012Validator
-            component = COMPONENTS[version.configuration["plugin_id"]]
-            for case in cases:
-                if not Draft202012Validator(component["input_schema"]).is_valid(case.definition["input"]):
-                    raise HTTPException(422, detail={"code": "COMPONENT_INPUT_INVALID", "case_key": case.case_key})
-        core = set(profile.definition["gate"]["core_case_keys"])
-        if core - {c.case_key for c in cases}:
-            raise HTTPException(422, detail={"code": "UNKNOWN_CORE_CASE"})
-        errors = []
-        for spec in specs:
-            for capability in metadata(spec)["required_capabilities"]:
-                if capability not in version.capabilities:
-                    errors.append({"evaluator": spec.instance_id, "code": "CAPABILITY_MISSING", "capability": capability})
-            for case in cases:
-                try:
-                    validate_case(spec, case.definition)
-                except (KeyError, ValueError, TypeError, IndexError):
-                    errors.append({"case_key": case.case_key, "evaluator": spec.instance_id, "code": "INVALID_ASSERTIONS"})
-        if errors:
-            raise HTTPException(422, detail={"code": "PREFLIGHT_FAILED", "errors": errors[:100]})
-        if profile.definition["execution"].get("tool_faults") and agent.adapter_type not in ("python", "langgraph"):
-            raise HTTPException(422, detail={"code": "FAULT_INJECTION_REQUIRES_CONTROLLED_TOOL_BOUNDARY"})
-        if profile.definition.get("environment"):
-            if version.effects == "read_only" or profile.definition["execution"].get("max_retries", 0):
-                raise HTTPException(422, detail={"code": "STATEFUL_ENVIRONMENT_REQUIRES_NO_RETRY"})
-            if any(c.definition["assertions"].get("environment_initial", {}) != {} for c in cases):
-                raise HTTPException(422, detail={"code": "INVALID_ENVIRONMENT_INITIAL_STATE"})
-        if profile.definition["execution"].get("max_retries", 0) and version.effects != "read_only":
-            raise HTTPException(422, detail={"code": "RETRY_REQUIRES_READ_ONLY"})
-        judge_specs = [e for e in specs if e.id == "llm_judge"]
-        if judge_specs and (not settings.judge_endpoint or not settings.judge_model):
-            raise HTTPException(422, detail={"code": "JUDGE_NOT_CONFIGURED"})
-        if len(judge_specs) * len(cases) * profile.definition["execution"]["repetitions"] > settings.judge_max_calls:
-            raise HTTPException(422, detail={"code": "JUDGE_BUDGET_EXCEEDED"})
         run = Run(project_id=agent.project_id, **body.model_dump(), manifest={}, manifest_hash="")
         session.add(run)
         session.flush()
@@ -501,6 +463,8 @@ def create_app(settings=None):
     install(router, settings, sessions, database, get, serialize, create_run, runner)
     from agenteval.product import install as install_product
     install_product(router, settings, database, get, serialize, create_run, runner)
+    from agenteval.workflow_api import install as install_workflows
+    install_workflows(router, settings, sessions, database, get, serialize, create_run)
     app.include_router(router)
     # Hash routes stay in the browser, so API 404s never fall back to index.html.
     # Public static files contain no credentials or business data.

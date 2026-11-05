@@ -34,6 +34,7 @@ export async function seedExample(api: API): Promise<Project> {
       await new Promise(resolve => setTimeout(resolve, 250));
     }
   }
+  await api.post(`quality/baselines/${project.id}`, { agent_id:agent.id,benchmark_version_id:version.id,grading_batch_id:batches[0],expected_revision:0 });
   await api.post<Comparison>('regressions/compare', { baseline_batch_id: batches[0], candidate_batch_id: batches[1] });
   return project;
 }

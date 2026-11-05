@@ -19,6 +19,9 @@ actor_context = ContextVar("http_actor", default=None)
 MUTATING_EVENTS = {"developer_update", "scope_changed", "bulk_confirm", "bulk_ignore", "bulk_merge", "bulk_assign",
     "retest_started", "retest", "promoted_to_regression"}
 SCOPED_ROUTES = {
+    "/workspace-versions/{project_id}",
+    "/onboarding/preview", "/onboarding/reuse-preview", "/onboarding/reuse", "/onboarding/requests/{request_key}", "/onboarding/drafts/{project_id}",
+    "/evaluations/{run_id}/reuse-config", "/benchmarks/{benchmark_id}/preview", "/benchmarks/{benchmark_id}/publish", "/benchmark-versions/{version_id}/diff", "/quality/baselines/{project_id}",
     "/protection/policy/{project_id}", "/protection/grants/{project_id}", "/protection/storage/{project_id}", "/protection/evaluations/{run_id}/raw",
     "/agents", "/agents/{agent_id}/versions", "/benchmarks", "/benchmarks/{benchmark_id}/versions", "/benchmark-versions/{version_id}/cases",
     "/profile-versions", "/evaluations", "/evaluations/{run_id}", "/evaluations/{run_id}/cancel", "/evaluations/{run_id}/regrade",
@@ -195,7 +198,7 @@ class Security:
         if administrative and not principal.admin: raise HTTPException(403, detail={"code": "ADMIN_REQUIRED"})
         if not principal.admin and route not in SCOPED_ROUTES | SELF_ROUTES | public_metadata | {"/projects"}:
             raise HTTPException(403, detail={"code": "ADMIN_REQUIRED"})
-        if route in ("/onboarding/check", "/onboarding/evaluations") and not body.get("project_id") and not principal.admin:
+        if route in ("/onboarding/check", "/onboarding/evaluations", "/onboarding/preview") and not body.get("project_id") and not principal.admin:
             raise HTTPException(403, detail={"code": "PROJECT_SCOPE_REQUIRED"})
         await asyncio.to_thread(self.scope, request, principal, body, write, route, public_metadata)
         from agenteval.protection import view_context
@@ -211,13 +214,13 @@ class Security:
                 "benchmark_id": Benchmark, "benchmark_version_id": BenchmarkVersion, "profile_version_id": ProfileVersion,
                 "run_id": Run, "grading_batch_id": GradingBatch, "baseline_batch_id": GradingBatch, "candidate_batch_id": GradingBatch,
                 "execution_id": Execution, "issue_id": QualityIssue, "comparison_id": Comparison, "decision_id": ReleaseDecision,
-                "credential_version_id": CredentialVersion, "case_id": TestCase}
-            for data in (request.path_params, dict(request.query_params), body):
+                "credential_version_id": CredentialVersion, "case_id": TestCase, "other_version_id": BenchmarkVersion, "source_run_id": Run}
+            for data in (request.path_params, dict(request.query_params), body, body.get("payload") if isinstance(body.get("payload"), dict) else {}):
                 for key, model in mappings.items():
                     if data.get(key):
                         if not isinstance(data[key], str) or len(data[key]) > 128: raise HTTPException(422, detail={"code": "INVALID_RESOURCE_ID"})
                         project_ids |= self.project_for(session, model, data[key])
-            if route == "/benchmark-versions/{version_id}/cases": project_ids |= self.project_for(session, BenchmarkVersion, request.path_params["version_id"])
+            if route in ("/benchmark-versions/{version_id}/cases", "/benchmark-versions/{version_id}/diff"): project_ids |= self.project_for(session, BenchmarkVersion, request.path_params["version_id"])
             if route == "/traces/{trace_id}":
                 execution = session.scalar(select(Execution).where(Execution.trace_id == request.path_params["trace_id"]))
                 if not execution: raise HTTPException(404, detail={"code": "NOT_FOUND"})

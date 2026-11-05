@@ -134,9 +134,11 @@ class DisplayProtection:
             policy = scope.get("state", {}).get("protection_policy")
             raw = scope.get("state", {}).get("raw_evidence_authorized", False)
             route = getattr(scope.get("route"), "path", "")
+            owner_draft = scope.get("state", {}).get("draft_owner_authorized", False) and route == "/api/v1/onboarding/drafts/{project_id}" and scope.get("method") == "GET"
             control = scope["path"].startswith("/api/v1/auth/") or (
                 scope["path"].startswith("/api/v1/team/") and not scope["path"].startswith("/api/v1/team/audit")) or route in {
                     "/api/v1/protection/policy/{project_id}", "/api/v1/protection/grants/{project_id}", "/api/v1/protection/storage/{project_id}"}
+            control |= owner_draft
             media = next((v for k,v in headers if k.lower() == b"content-type"), b"")
             if overflow:
                 data = b'{"code":"DISPLAY_RESPONSE_TOO_LARGE","message":"Use paginated evidence endpoints."}'
@@ -152,6 +154,7 @@ class DisplayProtection:
                 headers += [(b"x-agenteval-view", b"redacted"), (b"x-agenteval-policy", policy.metadata()["policy_hash"].encode()),
                     (b"x-agenteval-view-hash", hashlib.sha256(data).hexdigest().encode())]
             if raw: headers += [(b"x-agenteval-view", b"raw-audited")]
+            if owner_draft: headers += [(b"x-agenteval-view", b"private-owner-draft")]
             headers = [(k,v) for k,v in headers if k.lower() not in (b"content-length", b"etag")]
             headers += [(b"content-length", str(len(data)).encode())]
             if start["status"] >= 400 and scope.get("state", {}).get("audit_id"):

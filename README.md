@@ -2,15 +2,17 @@
 
 面向 Agent 开发团队的自动化质量评测与回归决策平台。
 
-**当前版本：0.10.0 · 最后更新：2026-11-05。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
+**当前版本：0.11.0 · 最后更新：2026-11-05。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
 
 | 能力 | 当前状态与边界 |
 |---|---|
 | 质量工作台 | Agent / 候选 / 基线 / Benchmark 选择器统一质量指标、问题和发布范围；全项目统计独立到项目总览 |
 | 任务查询与摘要 | 服务端跨页搜索/筛选/排序；执行状态与固定批次质量结论分列，失败可直达来源批次 |
-| 三步评测向导 | 连接与声明能力 → 选择目标 → 导入用例执行；复用原 Runner，事务提交和幂等回执 |
+| 评测创建与复用 | 新接入/已有版本双入口、历史配置复制、统一预检摘要和同键提交恢复；复用固定资源，不重复注册 |
+| 用例与基线 | JSON/JSONL 表格/单条编辑、按行字段预检及版本差异；显式保存基线与固定批次，分享 URL 可恢复 |
+| 个人草稿 | 服务端按成员/项目隔离，未保存离开提示；提交响应丢失后恢复草稿并查询原结果 |
 | Bad Case 闭环 | 默认自动收集待确认异常，确认后进入 Issue；支持手动模式、批量忽略/合并/分配、规则事实与预期/实际差异及兼容复测 |
-| 版本发布决策 | 可发布 / 阻断 / 证据不足，按 Agent、Benchmark、用例内容及显式适用版本匹配开放阻断项，冻结快照，支持 JSON/HTML 报告 |
+| 版本发布决策 | 当前评测范围满足门禁 / 阻断 / 证据不足，按 Agent、Benchmark、用例内容及显式适用版本匹配开放阻断项，冻结快照，另列当前有效性与重评提示，支持 JSON/HTML 报告 |
 | Agent 接入 | HTTP、可信 Python、实际 LangGraph；真实业务双项目验收待提供资源，本地集成样例不替代该验收 |
 | 团队身份 | 个人会话、部署管理员/项目评测/只读角色，服务端项目隔离，成员分配与实际操作者审计；旧共享 Token 显式兼容 |
 | HTTP 鉴权 | 服务端版本化环境秘密引用、Bearer/Header API Key、HEAD 与显式测试分开、凭据失效及协议错误反馈 |
@@ -24,14 +26,15 @@
 | Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
 | 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
 
-**本轮范围：** 补齐 AE-003 的可配置派生脱敏、个人原文专项权限、留存提醒和签名项目归档/隔离恢复机制。归档含原始数据且不加密，须使用受控存储权限；不删除原库，不包含外部环境与账户会话。未知业务敏感信息仍须项目规则及验收，真实双 Agent/Judge/当前 Compose 全栈灾备和容量目标仍待 AE-004，继续为受控内部试用版。
+**本轮范围：** 补齐产品批次 C 的 AE-104、105、109、110、111：复用/复制、用例编辑与预检、显式基线/批次 URL、发布时效、个人草稿和未知提交恢复。历史证据与结论不改写；已有项目基线需手动确认，不按运行时间回填。仍为受控内部试用版，真实业务、Judge、用户效率与当前 Compose 全栈灾备仍待 AE-004。
 
-**验证记录：** 本地 166 项 Python 测试通过；12 项真实浏览器和前端生产构建通过，原文授权、签名归档及隔离恢复 smoke 通过。最终全量及实际 PostgreSQL → SQLite 恢复结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。0.5.1 Compose 实测不冒充本版本全栈灾备验收；真实业务和用户效率仍待资源验证。
+**验证记录：** 本地完整基线 174 项 Python、15 项真实浏览器及生产构建通过；最终产品/迁移/归档受影响回归与团队、产品、保护 smoke 通过。CI 另在 PostgreSQL 上验证复用、私人草稿、显式基线、用例差异、发布时效及项目恢复，最终结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。不以协议夹具或 0.5.1 的旧部署验收冒充当前真实业务/全栈灾备成果。
 
 - [团队优化 PRD](docs/TEAM_RELEASE_OPTIMIZATION_SPEC.md)
 - [0.8 批次 A 交付与后续任务](docs/V0.8_TEAM_BATCH_A.md)
 - [0.9 团队身份、HTTP 凭据、迁移与 SDK/CI 接入](docs/V0.9_TEAM_FOUNDATION.md)
 - [0.10 脱敏、原文授权、留存与签名归档恢复](docs/V0.10_EVIDENCE_PROTECTION.md)
+- [0.11 产品流程、显式基线与个人草稿](docs/V0.11_PRODUCT_COMPLETION.md)
 - [团队身份/会话与数据保护设计](docs/TEAM_IDENTITY_DESIGN.md)
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
@@ -52,7 +55,7 @@
 
 默认在评分完成的同一事务自动收集“待确认异常”，不会直接认定为开发缺陷；管理员也可在“团队与凭据”切换为仅手动导入。Bad Case 手动入口继续保留，首屏优先显示待确认/待修复/待复测、成员负责人和“分配给我”。异常确认后进入修复与复测流程，支持批量确认、忽略、合并和分配。复测必须保留相同输入/断言及兼容策略，全部对应 Trial 通过后才能关闭；可将案例沉淀到长期回归集。首页先选择 Agent、候选版本、基线版本和 Benchmark 固定版本；Bad Case 与发布列表沿用此范围。Issue 默认仅适用于来源版本，可在详情显式选择受影响版本（版本 ID 集合，不推断后续版本）；历史问题不会无条件阻断新版本。版本比较页面可直接“生成发布评估”，或从“发布决策”选择历史比较；证据不足会保留第三态，不默认可发布。
 
-预览演示项目为“AgentEval 0.8.0 产品闭环演示”，包含阻断、修复与可发布、探索比较证据不足的记录。它使用本地退款集成样例，不代表真实业务 Agent 已验收。首次有效评测时间 ≤15 分钟等建议指标仍需真实用户试用测量。
+预览保留历史“AgentEval 0.8.0 产品闭环演示”等项目，包含阻断、修复与可发布、探索比较证据不足的记录。它使用本地退款集成样例，不代表真实业务 Agent 已验收。首次有效评测时间 ≤15 分钟等建议指标仍需真实用户试用测量。
 
 ## 本地启动
 
@@ -198,6 +201,10 @@ $env:PYTHONPATH = 'backend'
 | HTTP 凭据与测试调用 | `/api/v1/team/credentials`；POST `/api/v1/onboarding/test-call` |
 | 证据保护 | `/api/v1/protection/policy/{project_id}`、`grants/{project_id}`、`storage/{project_id}` |
 | 受审计原文 | POST `/api/v1/protection/evaluations/{run_id}/raw`，个人专项资格及必填理由 |
+| 预览与复用 | POST `/api/v1/onboarding/preview`、`reuse-preview`、`reuse`；GET `/api/v1/evaluations/{id}/reuse-config` |
+| 提交查询与草稿 | GET `/api/v1/onboarding/requests/{key}?project_id=…`；GET/POST `/api/v1/onboarding/drafts/{project_id}` |
+| 用例预检与差异 | POST `/api/v1/benchmarks/{id}/preview`、`publish`；GET `/api/v1/benchmark-versions/{id}/diff?other_version_id=…` |
+| 显式基线 | GET/POST `/api/v1/quality/baselines/{project_id}` |
 
 列表当前使用 offset/limit。发布版本无更新接口。创建 Run 支持 `Idempotency-Key` 请求头；相同键和请求返回原 Run，不同请求返回 409。报告返回实际 `grading_batch_id`；历史查询应显式传入该 ID。
 
@@ -282,9 +289,9 @@ Profile 的 `execution.tool_faults` 可指定 `tool_name`、`call_index`、`mode
 
 真实 Judge 校准入口为 `scripts/calibrate_judge.py`，例如 `python scripts/calibrate_judge.py --output .build/judge-calibration.json --repetitions 3`。需要实际端点/模型配置；仓库种子标签尚待独立人工复核，模拟协议和离线分析不能替代真实模型一致性报告。
 
-## 升级到 0.10
+## 升级到 0.11
 
-停止旧 API/Worker/Dispatcher，确认无在途调用并备份数据库与部署秘密，在副本演练后运行 `python -m agenteval init-db` 至 **0009**，前后端同时升级。历史证据不回写，默认展示保护也应用到旧记录；原文须个人管理员或专项授权成员填写理由读取，旧 Token 和机器身份不能读原文。原有 legacy 兼容和个人初始化步骤见 [0.9](docs/V0.9_TEAM_FOUNDATION.md)，本轮策略/归档/回退边界见 [0.10](docs/V0.10_EVIDENCE_PROTECTION.md)。恢复归档只能使用隔离空业务库，不能用作覆盖现有预览或生产数据的快捷操作。
+停止旧 API/Worker/Dispatcher，确认无在途调用并备份数据库与部署秘密，在副本演练后运行 `python -m agenteval init-db` 至 **0010**，前后端同步升级到 0.11。新增显式基线与个人草稿表，不回写历史评测；已有项目基线默认未配置，由用户选择固定评分批次后保存。个人草稿需个人账户和已选项目，不保存到浏览器持久存储。归档升级为 v2，旧 v1 可验证并恢复到升级后的隔离空业务库；新包不能用于旧程序回退。详细流程及兼容限制见 [0.11 交付](docs/V0.11_PRODUCT_COMPLETION.md)，个人账户初始化见 [0.9](docs/V0.9_TEAM_FOUNDATION.md)。
 
 ## 当前使用边界
 

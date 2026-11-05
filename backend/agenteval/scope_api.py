@@ -11,7 +11,7 @@ from agenteval.product_contracts import BulkIssues, IngestionPolicy, ScopeUpdate
 from agenteval.service import report
 
 
-def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=None, baseline_version_id=None, benchmark_version_id=None):
+def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=None, baseline_version_id=None, benchmark_version_id=None, baseline_batch_id=None, candidate_batch_id=None):
     get(session, Project, project_id)
     if not any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
         run = session.scalar(select(Run).where(Run.project_id == project_id, Run.status.in_(["completed", "cancelled"])).order_by(Run.created_at.desc(), Run.id))
@@ -27,10 +27,22 @@ def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=
     from agenteval.db import Benchmark
     if agent.project_id != project_id or candidate.agent_id != agent.id or get(session, Benchmark, benchmark.benchmark_id).project_id != project_id:
         raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
+    if baseline_version_id is None:
+        from agenteval.db import BaselineSetting
+        saved = session.scalar(select(BaselineSetting).where(BaselineSetting.project_id == project_id, BaselineSetting.agent_id == agent_id, BaselineSetting.benchmark_version_id == benchmark_version_id))
+        if saved:
+            baseline_batch_id = baseline_batch_id or saved.grading_batch_id
+            baseline_version_id = get(session, Run, get(session, GradingBatch, baseline_batch_id).run_id).agent_version_id
+    for batch_id, expected in ((candidate_batch_id, candidate_version_id), (baseline_batch_id, baseline_version_id)):
+        if batch_id:
+            batch = get(session, GradingBatch, batch_id); run = get(session, Run, batch.run_id)
+            if run.project_id != project_id or run.agent_version_id != expected or run.benchmark_version_id != benchmark_version_id or batch.status != "completed":
+                raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
     if baseline_version_id and get(session, AgentVersion, baseline_version_id).agent_id != agent_id:
         raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
     return {"agent_id": agent_id, "candidate_version_id": candidate_version_id, "baseline_version_id": baseline_version_id,
         "benchmark_id": benchmark.benchmark_id, "benchmark_version_id": benchmark_version_id,
+        "candidate_batch_id": candidate_batch_id, "baseline_batch_id": baseline_batch_id,
         "agent_name": agent.name, "candidate_label": f"{agent.name} · v{candidate.version}"}
 
 
@@ -47,6 +59,8 @@ def comparison_query(scope, decision=False):
         query = query.where(baseline.agent_version_id == scope["baseline_version_id"])
     else:
         query = query.where(False)
+    if scope.get("candidate_batch_id"): query = query.where(Comparison.report["candidate_batch_id"].as_string() == scope["candidate_batch_id"])
+    if scope.get("baseline_batch_id"): query = query.where(Comparison.report["baseline_batch_id"].as_string() == scope["baseline_batch_id"])
     return query
 
 
@@ -125,8 +139,8 @@ def install(router, database, get, serialize, runner, issue_view):
 
     @router.get("/quality/workbench/{project_id}")
     def workbench(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None,
-        baseline_version_id: str | None = None, benchmark_version_id: str | None = None, session=Depends(database)):
-        scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+        baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, session=Depends(database)):
+        scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
         if not scope:
             return {"evaluation_scope": None, "open_issues": 0, "pending_anomalies": 0, "blocking_issues": 0, "candidate": None,
                 "comparison": None, "latest_decision": None, "priorities": [], "version_labels": {}, "scope": "尚无已完成评测。"}
@@ -137,6 +151,7 @@ def install(router, database, get, serialize, runner, issue_view):
         latest = session.scalar(select(GradingBatch).join(Run, Run.id == GradingBatch.run_id).where(Run.project_id == project_id,
             Run.agent_version_id == scope["candidate_version_id"], Run.benchmark_version_id == scope["benchmark_version_id"],
             GradingBatch.status == "completed").order_by(GradingBatch.created_at.desc(), GradingBatch.id))
+        if scope.get("candidate_batch_id"): latest = get(session, GradingBatch, scope["candidate_batch_id"])
         candidate = comparison.report["candidate"] if comparison else report(session, latest) if latest else None
         decision = session.scalar(select(ReleaseDecision).where(ReleaseDecision.comparison_id == comparison.id).order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id)) if comparison else None
         labels = {"candidate": scope["candidate_label"]}
@@ -144,9 +159,10 @@ def install(router, database, get, serialize, runner, issue_view):
             labels["baseline"] = f"{scope['agent_name']} · v{get(session, AgentVersion, scope['baseline_version_id']).version}"
         active.sort(key=lambda i: (0 if i.kind == "issue" and i.severity == "blocking" else 1 if i.kind == "issue" else 2, str(i.created_at), i.id))
         from agenteval.comparison_context import views
+        from agenteval.release_validity import current_validity
         return {"evaluation_scope": scope, "open_issues": len(formal), "pending_anomalies": sum(i.kind == "anomaly" for i in active),
             "issue_counts": dict(Counter(i.status for i, _ in records)), "blocking_issues": sum(i.severity == "blocking" for i in formal),
-            "candidate": candidate, "comparison": views(session, [comparison], serialize)[0] if comparison else None, "latest_decision": serialize(decision) if decision else None,
+            "candidate": candidate, "comparison": views(session, [comparison], serialize)[0] if comparison else None, "latest_decision": {**serialize(decision), "current_validity": current_validity(session, decision)} if decision else None,
             "version_labels": labels, "priorities": [issue_view(session, i) for i in active[:5]],
             "scope": "所选 Agent、候选/基线版本及 Benchmark 固定版本；指标与适用问题使用同一范围。"}
 

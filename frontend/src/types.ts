@@ -5,7 +5,7 @@ export interface Project extends Entity { name: string; description: string }
 export interface Agent extends Entity { project_id: string; name: string; description: string; adapter_type: string }
 export interface AgentVersion extends Entity { agent_id: string; version: string; capabilities: string[]; configuration: RecordJSON; content_hash: string }
 export interface Benchmark extends Entity { project_id: string; name: string; description: string }
-export interface BenchmarkVersion extends Entity { benchmark_id: string; version: string; case_count: number; content_hash: string }
+export interface BenchmarkVersion extends Entity { benchmark_name?: string; benchmark_id: string; version: string; case_count: number; content_hash: string }
 export interface EvaluatorSpec { instance_id: string; id: string; version?: string; required?: boolean; hard_constraint?: boolean; config?: RecordJSON }
 export interface Profile extends Entity { project_id: string; name: string; version: string; content_hash: string; definition: { evaluators: EvaluatorSpec[]; execution: { repetitions: number; timeout_seconds: number; max_concurrency: number }; gate: { min_success_rate: number; max_success_rate_drop: number; min_decision_coverage: number; core_case_keys: string[] } } }
 export interface QualitySummary { grading_batch_id: string | null; revision: number | null; grading_status: string | null; quality_status: string; counts: Record<string, number>; planned_trials: number; unassessed_trials: number; trial_scoring_coverage: number | null; updated_at: string | null; duration_ms: number | null; initiator: { id: string | null; display_name: string; kind: string } }

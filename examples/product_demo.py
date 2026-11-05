@@ -29,6 +29,7 @@ def create_product_demo(client):
     baseline_version = post(f"agents/{av['id']}/versions", {"version": "1.0", "configuration": {"plugin_id": "example.refund.python"}})
     baseline = wait(post("evaluations", {"agent_version_id": baseline_version["id"], "benchmark_version_id": bad["benchmark_version_id"], "profile_version_id": bad["profile_version_id"]}))
     issue = post("quality/issues/import", {"grading_batch_id": bad["grading_batches"][0]["id"]})["items"][0]
+    post("quality/baselines/" + bad["project_id"], {"agent_id": av["id"], "benchmark_version_id": bad["benchmark_version_id"], "grading_batch_id": baseline["grading_batches"][0]["id"]})
     failed_compare = post("regressions/compare", {"baseline_batch_id": baseline["grading_batches"][0]["id"], "candidate_batch_id": bad["grading_batches"][0]["id"]})
     blocked = post("release-decisions", {"comparison_id": failed_compare["id"], "note": "实际业务状态失败，阻断该版本。"})
     assert blocked["status"] == "blocked"

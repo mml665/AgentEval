@@ -375,6 +375,26 @@ class ProtectionPolicy(Entity):
     definition: Mapped[dict] = mapped_column(JSON)
 
 
+class BaselineSetting(Entity):
+    __tablename__ = "baseline_settings"
+    __table_args__ = (UniqueConstraint("project_id", "agent_id", "benchmark_version_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    agent_id: Mapped[str] = mapped_column(ForeignKey("agents.id"))
+    benchmark_version_id: Mapped[str] = mapped_column(ForeignKey("benchmark_versions.id"))
+    grading_batch_id: Mapped[str] = mapped_column(ForeignKey("grading_batches.id"))
+    revision: Mapped[int] = mapped_column(default=1)
+    actor: Mapped[dict] = mapped_column(JSON)
+
+
+class EvaluationDraft(Entity):
+    __tablename__ = "evaluation_drafts"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("team_users.id"))
+    revision: Mapped[int] = mapped_column(default=1)
+    payload: Mapped[dict] = mapped_column(JSON)
+
+
 class EvidenceGrant(Entity):
     __tablename__ = "evidence_grants"
     __table_args__ = (UniqueConstraint("project_id", "user_id"),)

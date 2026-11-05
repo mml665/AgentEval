@@ -69,11 +69,11 @@ def install(router, settings, database, get, serialize, create_run, runner):
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/quality/comparisons")
-    def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
+    def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
         from agenteval.comparison_context import views
         query = select(Comparison).join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id)
         if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
             query = comparison_query(scope)
         return {"items": views(session, list(session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))), serialize),
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
@@ -108,29 +108,12 @@ def install(router, settings, database, get, serialize, create_run, runner):
             if receipt.request_hash != request_hash:
                 raise HTTPException(409, detail={"code": "IDEMPOTENCY_CONFLICT"})
             return serialize(get(session, Run, receipt.run_id))
+        from agenteval.workflow_validation import preview_guided, guided_profile
         try:
-            validate_agent_config(body.adapter_type, body.agent.configuration, settings)
-            preset = {"answer": [{"instance_id": "answer", "id": "exact_match"}],
-                "tools": [{"instance_id": "tools", "id": "tool_call"}],
-                "trajectory": [{"instance_id": "trajectory", "id": "trajectory"}],
-                "retrieval": [{"instance_id": metric, "id": "rag", "config": {"metric": metric, "k": 5}} for metric in ("recall", "mrr", "ndcg")],
-                "state": [{"instance_id": "state", "id": "state_assertion"}]}
-            profile = ProfileCreate(project_id=body.project_id or "pending", name="向导评分方案", version="1",
-                evaluators=[rule for goal in body.goals for rule in preset[goal]], execution=body.execution, gate=body.gate,
-                environment={"adapter_id": body.environment_id} if body.environment_id else None)
-            errors = []
-            for spec in profile.evaluators:
-                if set(metadata(spec)["required_capabilities"]) - set(body.agent.capabilities):
-                    errors.append({"evaluator": spec.instance_id, "code": "CAPABILITY_MISSING"})
-                for case in body.benchmark.cases:
-                    try:
-                        validate_case(spec, case.model_dump())
-                    except (KeyError, ValueError, TypeError, IndexError):
-                        errors.append({"case_key": case.case_key, "evaluator": spec.instance_id, "code": "INVALID_ASSERTIONS"})
-            if errors:
-                raise HTTPException(422, detail={"code": "PREFLIGHT_FAILED", "errors": errors})
-        except ValueError as exc:
-            raise HTTPException(422, detail={"code": "INVALID_GUIDED_CONFIGURATION", "message": str(exc)})
+            preview_guided(session, settings, body)
+            profile = guided_profile(body)
+        except ValueError:
+            raise HTTPException(422, detail={"code": "INVALID_GUIDED_CONFIGURATION"}) from None
         project = get(session, Project, body.project_id) if body.project_id else Project(name=body.project_name, description="通过三步评测向导创建")
         session.add(project); session.flush()
         from agenteval.credentials import validate_reference
@@ -166,11 +149,11 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return {"items": imported, "source_batch_id": batch.id}
 
     @router.get("/quality/issues")
-    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, assignee_user_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, assignee_user_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         get(session, Project, project_id)
         query = select(QualityIssue).where(QualityIssue.project_id == project_id)
         if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
             ids = [i.id for i, _ in applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])]
             query = query.where(QualityIssue.id.in_(ids))
         if assignee_user_id: query = query.where(QualityIssue.assignee_user_id == assignee_user_id)
@@ -326,29 +309,38 @@ def install(router, settings, database, get, serialize, create_run, runner):
                 side_run = get(locked, Run, comparison.report[side]["run_id"])
                 av = get(locked, AgentVersion, side_run.agent_version_id)
                 versions[side] = {"agent_name": get(locked, Agent, av.agent_id).name, "version": av.version, "version_id": av.id, "agent_id": av.agent_id}
+            benchmark_version = get(locked, BenchmarkVersion, run.benchmark_version_id)
+            benchmark = get(locked, Benchmark, benchmark_version.benchmark_id)
+            value["benchmark"] = {"id": benchmark_version.id, "benchmark_id": benchmark.id, "name": benchmark.name, "version": benchmark_version.version, "case_count": benchmark_version.case_count}
             value["versions"] = versions
+            value["gate"] = candidate_batch.grading_manifest["gate"]
+            value["sample_scope"] = {side: comparison.report[side]["planned_trials"] for side in ("baseline", "candidate")}
             decision = ReleaseDecision(project_id=project_id, comparison_id=comparison.id, status=value["status"], snapshot=value)
             locked.add(decision); locked.flush(); data = serialize(decision)
         return data
 
+    def decision_view(session, row):
+        from agenteval.release_validity import current_validity
+        return {**serialize(row), "current_validity": current_validity(session, row)}
+
     @router.get("/release-decisions")
-    def release_list(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def release_list(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         query = select(ReleaseDecision).where(ReleaseDecision.project_id == project_id)
         if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
             query = comparison_query(scope, decision=True).where(ReleaseDecision.project_id == project_id)
-        return {"items": [serialize(d) for d in session.scalars(query.order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id).offset(offset).limit(limit))],
+        return {"items": [decision_view(session, d) for d in session.scalars(query.order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id).offset(offset).limit(limit))],
                 "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/release-decisions/{decision_id}")
     def release_detail(decision_id: str, session=Depends(database)):
-        return serialize(get(session, ReleaseDecision, decision_id))
+        return decision_view(session, get(session, ReleaseDecision, decision_id))
 
     @router.get("/release-decisions/{decision_id}/export")
     def export_release(decision_id: str, format: str = Query("json", pattern="^(json|html)$"), session=Depends(database)):
         from agenteval.exports import redact
         decision = get(session, ReleaseDecision, decision_id)
-        value = redact(serialize(decision))
+        value = redact(decision_view(session, decision))
         from agenteval.protection import view_context
         if view_context.get(): value["view"] = view_context.get().metadata()
         value = {**value, "content_hash": digest(value)}
