@@ -23,6 +23,9 @@ def work(item_id):
     engine, sessions = make_database(Settings().database_url)
     try:
         asyncio.run(Coordinator(sessions, Settings()).process(item_id))
+    except Exception as exc:
+        # Celery otherwise records the full exception/DB parameters in its task traceback.
+        raise RuntimeError("WORK_ITEM_FAILED:" + type(exc).__name__) from None
     finally:
         engine.dispose()
 

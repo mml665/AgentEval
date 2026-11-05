@@ -4,17 +4,7 @@ import html
 import io
 import json
 
-SENSITIVE = {"api_key", "apikey", "password", "authorization", "access_token", "secret", "token"}
-
-
-def redact(value):
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    if isinstance(value, dict):
-        return {k: "[REDACTED]" if k.lower() in SENSITIVE else redact(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact(x) for x in value]
-    return value
+from agenteval.protection import redact, view_context
 
 
 def safe_cell(value):
@@ -24,6 +14,7 @@ def safe_cell(value):
 
 def render(bundle, format):
     bundle = redact(bundle)
+    if view_context.get(): bundle["view"] = view_context.get().metadata()
     payload = json.dumps(bundle, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     checksum = hashlib.sha256(payload.encode()).hexdigest()
     if format == "json":
@@ -47,4 +38,4 @@ def render(bundle, format):
 <h1>AgentEval 评测报告</h1><p>Run: {esc(report['run_id'])}</p><p>固定评分批次：{esc(report['grading_batch_id'])}</p><pre>{esc(json.dumps(metrics,ensure_ascii=False,indent=2))}</pre>
 <table><thead><tr><th>用例</th><th>重复试验</th><th>判定</th><th>执行</th><th>依据</th></tr></thead><tbody>{table}</tbody></table>
 <h2>配置与证据</h2><details><summary>查看完整导出数据</summary><pre>{esc(json.dumps(bundle,ensure_ascii=False,indent=2))}</pre></details>
-<p><small>SHA-256: {checksum} · 敏感字段按名称脱敏；业务文本仍需按项目策略审核。</small></p></html>''', "text/html; charset=utf-8"
+<p><small>派生视图 SHA-256: {checksum} · 已应用展示脱敏策略；原始完整性哈希仅适用于受保护的存储证据。</small></p></html>''', "text/html; charset=utf-8"

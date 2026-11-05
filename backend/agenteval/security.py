@@ -19,6 +19,7 @@ actor_context = ContextVar("http_actor", default=None)
 MUTATING_EVENTS = {"developer_update", "scope_changed", "bulk_confirm", "bulk_ignore", "bulk_merge", "bulk_assign",
     "retest_started", "retest", "promoted_to_regression"}
 SCOPED_ROUTES = {
+    "/protection/policy/{project_id}", "/protection/grants/{project_id}", "/protection/storage/{project_id}", "/protection/evaluations/{run_id}/raw",
     "/agents", "/agents/{agent_id}/versions", "/benchmarks", "/benchmarks/{benchmark_id}/versions", "/benchmark-versions/{version_id}/cases",
     "/profile-versions", "/evaluations", "/evaluations/{run_id}", "/evaluations/{run_id}/cancel", "/evaluations/{run_id}/regrade",
     "/evaluations/{run_id}/report", "/evaluations/{run_id}/results", "/evaluations/{run_id}/bad-cases", "/evaluations/{run_id}/work-items",
@@ -189,6 +190,7 @@ class Security:
         administrative |= route == "/quality/policy/{project_id}" and write
         administrative |= route.startswith("/team/members") and write
         administrative |= route.startswith("/team/credentials") and write
+        administrative |= route.startswith(("/protection/policy/", "/protection/grants/")) and write
         administrative |= route.endswith("/release-capacity")
         if administrative and not principal.admin: raise HTTPException(403, detail={"code": "ADMIN_REQUIRED"})
         if not principal.admin and route not in SCOPED_ROUTES | SELF_ROUTES | public_metadata | {"/projects"}:
@@ -196,6 +198,8 @@ class Security:
         if route in ("/onboarding/check", "/onboarding/evaluations") and not body.get("project_id") and not principal.admin:
             raise HTTPException(403, detail={"code": "PROJECT_SCOPE_REQUIRED"})
         await asyncio.to_thread(self.scope, request, principal, body, write, route, public_metadata)
+        from agenteval.protection import view_context
+        view_context.set(request.state.protection_policy)
         if write: actor_context.set({**principal.actor(), "audit_id": request.state.audit_id})
         return principal
 
@@ -229,9 +233,11 @@ class Security:
                 project_ids |= self.project_for(session, CredentialVersion, configuration["credential_version_id"])
             if not principal.admin:
                 if any(p not in principal.roles for p in project_ids): raise HTTPException(404, detail={"code": "NOT_FOUND"})
-                if write and any(principal.roles[p] != "evaluator" for p in project_ids): raise HTTPException(403, detail={"code": "READ_ONLY"})
+                if write and route != "/protection/evaluations/{run_id}/raw" and any(principal.roles[p] != "evaluator" for p in project_ids): raise HTTPException(403, detail={"code": "READ_ONLY"})
                 if not project_ids and route not in public_metadata | {"/projects"} | SELF_ROUTES:
                     raise HTTPException(403, detail={"code": "PROJECT_SCOPE_REQUIRED"})
+            from agenteval.protection import load_policy
+            request.state.protection_policy = load_policy(session, self.settings, project_ids or set(principal.roles))
             if write:
                 audit = SecurityAudit(actor=principal.actor(), action=request.method + " " + route,
                     project_ids=sorted(project_ids), resource_ids={k: str(v)[:100] for k, v in request.path_params.items()}, status=None)

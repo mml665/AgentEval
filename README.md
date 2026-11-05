@@ -2,7 +2,7 @@
 
 面向 Agent 开发团队的自动化质量评测与回归决策平台。
 
-**当前版本：0.9.0 · 最后更新：2026-11-04。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
+**当前版本：0.10.0 · 最后更新：2026-11-05。** 帮助团队回答：新版本是否更好、哪里退化、证据是什么、是否具备发布条件。主线为“接入 → 评测 → 诊断 → 修复 → 回归 → 发布建议”；沿用异构 Adapter、独立状态验证、Trace 和持久化执行核心。
 
 | 能力 | 当前状态与边界 |
 |---|---|
@@ -14,6 +14,8 @@
 | Agent 接入 | HTTP、可信 Python、实际 LangGraph；真实业务双项目验收待提供资源，本地集成样例不替代该验收 |
 | 团队身份 | 个人会话、部署管理员/项目评测/只读角色，服务端项目隔离，成员分配与实际操作者审计；旧共享 Token 显式兼容 |
 | HTTP 鉴权 | 服务端版本化环境秘密引用、Bearer/Header API Key、HEAD 与显式测试分开、凭据失效及协议错误反馈 |
+| 展示与原文保护 | 业务 API/导出共用版本化字段路径及内容规则；原文单独个人授权、填写理由并审计，历史证据及评分不改写 |
+| 留存与归档 | 可配置期限提醒、发布引用及 response/Trace 字符量观测；签名项目快照与隔离空库恢复，不自动删除原库 |
 | 四粒度评测 | 端到端、轨迹、逐工具调用、独立组件；无观测或不适用的指标保留未知/空值 |
 | 独立环境验证 | 平台读取隔离 SQLite 状态，快照先提交再重置；Agent 自述不能替代独立证据 |
 | 证据与恢复 | 平台来源标记、状态哈希校验、租约保护、崩溃前快照保留；未确认重置不放行门禁 |
@@ -22,14 +24,15 @@
 | Judge | 已有结构化调用、预算、标签校准流程；真实模型一致性和稳定性报告待实际模型与复核标签 |
 | 部署 | 0.5.1 已完成 Compose 构建、全服务启动和排队任务重启恢复；生产灾备、安全隔离及完整脱敏尚未验收 |
 
-**本轮范围：** 按新 PRD 交付团队基础：HTTP 凭据接入机制、个人身份/会话/项目授权、成员负责人和机器令牌，以及插件环境最小化。AE-001 的真实业务验收待资源；AE-003 的完整脱敏、原始读取专项权限及归档恢复尚未完成，AE-004 仍待验。仍为受控内部试用版，不能标为团队正式上线。
+**本轮范围：** 补齐 AE-003 的可配置派生脱敏、个人原文专项权限、留存提醒和签名项目归档/隔离恢复机制。归档含原始数据且不加密，须使用受控存储权限；不删除原库，不包含外部环境与账户会话。未知业务敏感信息仍须项目规则及验收，真实双 Agent/Judge/当前 Compose 全栈灾备和容量目标仍待 AE-004，继续为受控内部试用版。
 
-**验证记录：** 本地 151 项 Python 测试通过，11 项真实浏览器和前端生产构建通过；新增团队公开 API smoke。CI 另在 PostgreSQL 上运行队列、产品与团队 smoke，最终全量结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。0.5.1 的 Compose 实测单独保留，不冒充 0.9 镜像重新部署证明。真实业务双 Agent、实际 Judge 校准及用户效率指标仍待验收。
+**验证记录：** 本地 166 项 Python 测试通过；12 项真实浏览器和前端生产构建通过，原文授权、签名归档及隔离恢复 smoke 通过。最终全量及实际 PostgreSQL → SQLite 恢复结果见[提交对应 Actions](https://github.com/mml665/AgentEval/actions)。0.5.1 Compose 实测不冒充本版本全栈灾备验收；真实业务和用户效率仍待资源验证。
 
 - [团队优化 PRD](docs/TEAM_RELEASE_OPTIMIZATION_SPEC.md)
 - [0.8 批次 A 交付与后续任务](docs/V0.8_TEAM_BATCH_A.md)
 - [0.9 团队身份、HTTP 凭据、迁移与 SDK/CI 接入](docs/V0.9_TEAM_FOUNDATION.md)
-- [团队身份/会话设计（待实现）](docs/TEAM_IDENTITY_DESIGN.md)
+- [0.10 脱敏、原文授权、留存与签名归档恢复](docs/V0.10_EVIDENCE_PROTECTION.md)
+- [团队身份/会话与数据保护设计](docs/TEAM_IDENTITY_DESIGN.md)
 - [项目 PRD](docs/AgentEval_PRD_V1.1.md)
 - [系统设计](docs/AgentEval_系统详细设计_V1.1.md)
 - [实际构建状态、限制与验证记录](docs/BUILD_STATUS.md)
@@ -193,6 +196,8 @@ $env:PYTHONPATH = 'backend'
 | 团队与项目成员 | `/api/v1/team/users`、`/api/v1/team/members` |
 | 机器令牌与审计 | `/api/v1/team/machines`、`/api/v1/team/audit`（管理员） |
 | HTTP 凭据与测试调用 | `/api/v1/team/credentials`；POST `/api/v1/onboarding/test-call` |
+| 证据保护 | `/api/v1/protection/policy/{project_id}`、`grants/{project_id}`、`storage/{project_id}` |
+| 受审计原文 | POST `/api/v1/protection/evaluations/{run_id}/raw`，个人专项资格及必填理由 |
 
 列表当前使用 offset/limit。发布版本无更新接口。创建 Run 支持 `Idempotency-Key` 请求头；相同键和请求返回原 Run，不同请求返回 409。报告返回实际 `grading_batch_id`；历史查询应显式传入该 ID。
 
@@ -277,15 +282,15 @@ Profile 的 `execution.tool_faults` 可指定 `tool_name`、`call_index`、`mode
 
 真实 Judge 校准入口为 `scripts/calibrate_judge.py`，例如 `python scripts/calibrate_judge.py --output .build/judge-calibration.json --repetitions 3`。需要实际端点/模型配置；仓库种子标签尚待独立人工复核，模拟协议和离线分析不能替代真实模型一致性报告。
 
-## 升级到 0.9
+## 升级到 0.10
 
-停止旧 API/Worker/Dispatcher，确认无在途调用并备份数据库与部署秘密，在副本演练后运行 `python -m agenteval init-db` 至 **0008**。前后端同时升级，CLI 初始化首位管理员，配置成员/机器令牌再切换 team 模式。默认 legacy 仅作兼容，具有共享管理员权限，页面明确提示。历史负责人保留为 legacy_owner，旧 actor 不伪造个人；固定运行、评分和发布快照不改写。回退须恢复成套旧备份及发布包，不能套用 0.8 无 DDL 的回退结论。完整参数、Compose 映射、凭据轮换和回退限制见 [0.9 交付说明](docs/V0.9_TEAM_FOUNDATION.md)。
+停止旧 API/Worker/Dispatcher，确认无在途调用并备份数据库与部署秘密，在副本演练后运行 `python -m agenteval init-db` 至 **0009**，前后端同时升级。历史证据不回写，默认展示保护也应用到旧记录；原文须个人管理员或专项授权成员填写理由读取，旧 Token 和机器身份不能读原文。原有 legacy 兼容和个人初始化步骤见 [0.9](docs/V0.9_TEAM_FOUNDATION.md)，本轮策略/归档/回退边界见 [0.10](docs/V0.10_EVIDENCE_PROTECTION.md)。恢复归档只能使用隔离空业务库，不能用作覆盖现有预览或生产数据的快捷操作。
 
 ## 当前使用边界
 
 当前面向受控内部团队，team 模式提供项目角色隔离；完整数据保护与真实业务上线条件仍未齐备。local 与 celery 模式采用相同数据库工作项、租约和结果保护协议；API 重启不撤销有效 Worker 租约。租约过期且结果未确认时标记 unknown，未知副作用不自动重跑，并保留容量待管理员核验。取消可终止本地插件进程，但中断 HTTP 等待不代表远端已停止。
 
-已使用 OpenTelemetry SDK 记录本平台埋点范围内的父子 Span、事件、输入输出和耗时，并通过增量 IPC 保留失败或超时前的轨迹；黑盒内部未提供的观测不生成。输入输出尚未实现业务敏感数据的完整脱敏、制品存储和留存清理，请使用脱敏测试数据。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。
+已使用 OpenTelemetry SDK 记录本平台埋点范围内的父子 Span、事件、输入输出和耗时，并通过增量 IPC 保留失败或超时前的轨迹；黑盒内部未提供的观测不生成。已有可配置展示脱敏和个人原文权限，但不能自动发现任意业务秘密，仍应使用脱敏测试数据并验证项目策略。归档为签名原始项目快照，不含加密对象存储或自动清理。HTTP 主机允许清单尚未实现 DNS/IP 固定校验和基础设施出站隔离。Python 子进程仅运行部署注册的可信插件，不能作为不可信代码沙箱。
 
 ## 文档维护
 

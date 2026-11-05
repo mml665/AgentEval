@@ -66,6 +66,13 @@ def main():
                 assert actual["quality_summary"]["initiator"]["id"] == identity["id"]
                 assert actual["status"] == "completed"
                 assert reader.get(f"/api/v1/evaluations/{run['id']}/export", params={"grading_batch_id": run["grading_batch_id"]}).status_code == 200
+                raw_path = f"protection/evaluations/{run['id']}/raw"
+                assert reader.post("/api/v1/" + raw_path, json={"reason": "Controlled smoke original inspection"}).status_code == 403
+                post(admin, "protection/grants/" + a["id"], {"user_id": users["reader"]["id"], "raw_read": True})
+                original = post(reader, raw_path, {"reason": "Controlled smoke original inspection"})
+                assert original["view"]["kind"] == "raw-audited"
+                post(admin, "protection/grants/" + a["id"], {"user_id": users["reader"]["id"], "raw_read": False})
+                assert reader.post("/api/v1/" + raw_path, json={"reason": "Controlled smoke original inspection"}).status_code == 403
                 issue = writer.get("/api/v1/quality/issues", params={"project_id": a["id"]}).json()["items"][0]
                 updated = post(writer, f"quality/issues/{issue['id']}/update", {"expected_revision": issue["revision"], "status": "confirmed", "assignee_user_id": identity["id"], "note": "Fixture failure confirmed"})
                 assert updated["assignee_user_id"] == identity["id"]

@@ -86,6 +86,8 @@ def create_app(settings=None):
     app.state.security = security
     app.add_middleware(RequestLimit)
     app.add_middleware(SecurityResponse, security=security)
+    from agenteval.protection import DisplayProtection
+    app.add_middleware(DisplayProtection, security=security)
 
     @app.exception_handler(IntegrityError)
     async def conflict_handler(request, exc):
@@ -123,6 +125,8 @@ def create_app(settings=None):
     install_team(app, router, security, settings, sessions, database, get, serialize)
     from agenteval.credentials import install as install_credentials
     install_credentials(router, settings, database, get)
+    from agenteval.protection_api import install as install_protection
+    install_protection(router, settings, sessions, database, get, serialize)
 
     @app.get("/health")
     def health():

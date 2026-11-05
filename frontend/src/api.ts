@@ -5,6 +5,11 @@ export class APIError extends Error {
 }
 
 const messages: Record<string, string> = {
+  RAW_EVIDENCE_PERMISSION_REQUIRED: '原始证据需要个人管理员或项目专项授权；共享和机器令牌不能读取。',
+  REDACTION_SECRET_UNAVAILABLE: '服务端缺少内容脱敏变量，请由部署管理员配置后再发布策略。',
+  REDACTION_POLICY_UNAVAILABLE: '脱敏变量缺失或原值已变更，服务端已停止返回业务视图。请管理员恢复配置或发布新的策略版本。',
+  PROTECTION_REVISION_CONFLICT: '保护策略已被其他管理员更新，请刷新后重新编辑。',
+  DISPLAY_RESPONSE_TOO_LARGE: '结果超过单次安全展示上限，请分页查询证据。',
   LOGIN_REJECTED: '用户名或密码无效，或成员已停用。',
   LOGIN_RATE_LIMITED: '登录尝试过于频繁，请稍后重试。',
   SESSION_EXPIRED: '会话已过期，请重新登录。',

@@ -40,6 +40,7 @@ jobs:
             .build/team-a-*.png
             .build/team-a-contrast.json
             .build/team-b-*.png
+            .build/protection-*.png
   test:
     runs-on: ubuntu-latest
     steps:
@@ -55,6 +56,7 @@ jobs:
       - run: python scripts/v05_smoke.py
       - run: python scripts/product_smoke.py
       - run: python scripts/team_smoke.py
+      - run: python scripts/protection_smoke.py
   postgres:
     runs-on: ubuntu-latest
     services:
@@ -81,6 +83,7 @@ jobs:
       AGENTEVAL_TEST_BROKER_URL: redis://127.0.0.1:6379/0
       AGENTEVAL_PRODUCT_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
       AGENTEVAL_TEAM_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
+      AGENTEVAL_PROTECTION_DATABASE_URL: postgresql+psycopg://agenteval:ci-ephemeral-password@127.0.0.1:5432/agenteval
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -92,4 +95,5 @@ jobs:
       - run: python scripts/queue_smoke.py
       - run: python scripts/product_smoke.py
       - run: python scripts/team_smoke.py
+      - run: python scripts/protection_smoke.py
 

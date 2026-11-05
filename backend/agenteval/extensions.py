@@ -129,7 +129,11 @@ def install(router, settings, sessions, database, get, serialize, create_run, ru
         import json
         from agenteval.exports import redact
         comparison = get(session, Comparison, comparison_id)
-        return Response(json.dumps(redact(comparison.report), ensure_ascii=False, indent=2), media_type="application/json",
+        value = redact(comparison.report)
+        from agenteval.protection import view_context
+        if view_context.get(): value["view"] = view_context.get().metadata()
+        value["content_hash"] = digest(value)
+        return Response(json.dumps(value, ensure_ascii=False, indent=2), media_type="application/json",
                         headers={"Content-Disposition": f'attachment; filename="regression-{comparison.id}.json"', "Cache-Control": "no-store"})
 
     @router.get("/components")

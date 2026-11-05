@@ -349,6 +349,8 @@ def install(router, settings, database, get, serialize, create_run, runner):
         from agenteval.exports import redact
         decision = get(session, ReleaseDecision, decision_id)
         value = redact(serialize(decision))
+        from agenteval.protection import view_context
+        if view_context.get(): value["view"] = view_context.get().metadata()
         value = {**value, "content_hash": digest(value)}
         payload = json.dumps(value, ensure_ascii=False, indent=2)
         if format == "html":

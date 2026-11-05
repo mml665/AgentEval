@@ -2,7 +2,6 @@ import { test, expect, type Page } from '@playwright/test';
 
 const token = 'local-browser-test-token-only';
 
-
 async function login(page: Page) {
   await page.goto('/');
   await page.getByLabel('访问令牌', { exact: true }).fill(token);
@@ -546,4 +545,47 @@ test('HTTP credential reference UI performs only explicit authenticated test cal
   expect(await exported.text()).not.toContain('browser-http-fixture-secret-not-real');
   expect((await (await request.get(`/api/v1/team/credentials?project_id=${project.id}`, { headers })).text())).not.toContain('fingerprint');
   await page.screenshot({ path: '../.build/team-b-http.png', fullPage: true });
+});
+
+test('protected views keep secrets hidden, policy UI versions settings, and original access is explicit and audited', async ({ page, request }) => {
+  const headers = { Authorization: `Bearer ${token}` };
+  async function post(path: string, data?: unknown) { const r = await request.post(`/api/v1/${path}`, { headers, data }); expect(r.ok(), await r.text()).toBeTruthy(); return r.json(); }
+  const project = await post('projects', { name: '证据保护与隔离验收' });
+  const agent = await post('agents', { project_id: project.id, name: 'Protected fixture', adapter_type: 'python' });
+  const av = await post(`agents/${agent.id}/versions`, { version: '1', configuration: { plugin_id: 'example.order.v1' } });
+  const bm = await post('benchmarks', { project_id: project.id, name: 'Protected inputs' });
+  const secret = 'browser-sensitive-business-contact-only';
+  const bv = await post(`benchmarks/${bm.id}/versions`, { version: '1', cases: [{ case_key: 'one', input: { order_id: '1001', business_note: secret, customer: { phone: '13800000000' } }, assertions: { expected_output: { order_id: '1001', status: 'shipped' } } }] });
+  const profile = await post('profile-versions', { project_id: project.id, name: 'Rules', version: '1', evaluators: [{ instance_id: 'answer', id: 'exact_match' }] });
+  const run = await post('evaluations', { agent_version_id: av.id, benchmark_version_id: bv.id, profile_version_id: profile.id });
+  await login(page); await page.getByLabel('当前项目', { exact: true }).selectOption(project.id);
+  await page.getByRole('link', { name: '团队与凭据', exact: true }).click();
+  await page.getByLabel('字段路径（每行一个；支持 * 单层、** 多层）').fill('/**/customer/phone');
+  await page.getByLabel('内容秘密的服务端变量名（每行一个，不填秘密值）').fill('AGENTEVAL_REDACTION_SECRET_BROWSER');
+  await page.getByRole('button', { name: '发布新的保护策略', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('已发布策略修订 1');
+  const ordinary = await request.get(`/api/v1/benchmark-versions/${bv.id}/cases`, { headers });
+  expect(await ordinary.text()).not.toContain(secret); expect(await ordinary.text()).not.toContain('13800000000');
+  const denied = await request.post(`/api/v1/protection/evaluations/${run.id}/raw`, { headers, data: { reason: 'Shared identity must not see originals' } });
+  expect(denied.status()).toBe(403);
+  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('button', { name: '使用个人账号登录', exact: true }).click();
+  await page.getByLabel('用户名', { exact: true }).fill('fixtureadmin');
+  await page.getByLabel('密码', { exact: true }).fill('browser-admin-password-fixture-only');
+  await page.getByRole('button', { name: '登录团队工作台', exact: true }).click();
+  await expect(page.getByRole('navigation', { name: '主导航' })).toBeAttached();
+  await page.getByLabel('当前项目', { exact: true }).selectOption(project.id);
+  await page.goto(`/#/runs/${run.id}?project_id=${project.id}`);
+  const panel = page.locator('section.panel').filter({ has: page.getByRole('heading', { name: '受审计的原始证据', exact: true }) });
+  await expect(panel).toBeVisible();
+  await expect(page.locator('body')).not.toContainText(secret);
+  await panel.getByText('按授权读取原文（需理由）', { exact: true }).click();
+  await panel.getByLabel('原文读取理由（至少 8 个字符）').fill('受控验收检查原始业务输入');
+  await panel.getByRole('button', { name: '读取原始证据并记录审计', exact: true }).click();
+  await expect(panel.locator('pre')).toContainText(secret);
+  await expect(panel.getByText(/原文读取审计/)).toBeVisible();
+  await panel.getByRole('button', { name: '关闭并清除原文', exact: true }).click();
+  await expect(panel.locator('pre')).toHaveCount(0);
+  await expect(page.locator('body')).not.toContainText(secret);
+  await page.screenshot({ path: '../.build/protection-default-view.png', fullPage: true });
 });

@@ -19,6 +19,7 @@ PASSWORD = "test-password-for-fixture-only"
 def team(tmp_path):
     app = create_app(Settings(database_url="sqlite:///" + (tmp_path / "team.db").as_posix(), auth_mode="team",
         api_token="legacy-disabled-test-token", session_cookie_secure=False, session_origins=(ORIGIN,),
+        credential_fingerprint_key="fixture-protection-fingerprint-key-32",
         environment_root=str(tmp_path / "environments")))
     Base.metadata.create_all(app.state.engine)
     bootstrap_admin(app.state.sessions, "admin", PASSWORD)

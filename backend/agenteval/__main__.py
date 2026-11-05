@@ -7,7 +7,11 @@ from alembic.config import Config
 
 def main():
     parser = argparse.ArgumentParser(prog="python -m agenteval")
-    parser.add_argument("command", choices=["init-db", "init-admin", "serve", "worker", "dispatch"])
+    parser.add_argument("command", choices=["init-db", "init-admin", "serve", "worker", "dispatch", "archive-project", "verify-archive", "restore-archive"])
+    parser.add_argument("--project-id")
+    parser.add_argument("--archive-file")
+    parser.add_argument("--reason", default="")
+    parser.add_argument("--confirm-isolated", action="store_true")
     parser.add_argument("--username")
     parser.add_argument("--display-name", default="Administrator")
     parser.add_argument("--host", default="127.0.0.1")
@@ -15,6 +19,30 @@ def main():
     args = parser.parse_args()
     if args.command == "init-db":
         command.upgrade(Config(str(Path(__file__).resolve().parents[2] / "alembic.ini")), "head")
+    elif args.command in ("archive-project", "verify-archive", "restore-archive"):
+        import json
+        from agenteval import archives
+        from agenteval.config import Settings
+        from agenteval.db import make_database, SecurityAudit
+        if not args.archive_file: parser.error("--archive-file is required")
+        engine, sessions = make_database(Settings().database_url)
+        try:
+            if args.command == "archive-project":
+                if not args.project_id: parser.error("--project-id is required")
+                result = archives.create(engine, args.project_id, args.archive_file, args.reason)
+            elif args.command == "verify-archive": result = archives.verify(args.archive_file)["manifest"]
+            else: result = archives.restore(engine, args.archive_file, args.confirm_isolated)
+            with sessions() as session:
+                session.add(SecurityAudit(actor={"kind": "deployment_cli", "id": None, "display_name": "Deployment archive operator"},
+                    action=args.command.upper().replace("-", "_"), project_ids=[result["project_id"]],
+                    resource_ids={"payload_hash": result["payload_hash"]}, status=200)); session.commit()
+            print(json.dumps({"operation": args.command, "project_id": result["project_id"], "payload_hash": result["payload_hash"], "counts": result["counts"]}))
+        except Exception as exc:
+            # Never print database connection URLs, signing keys or malformed archive content.
+            message = str(exc)
+            code = message if message.isupper() and len(message) < 100 and " " not in message else "ARCHIVE_OPERATION_FAILED"
+            raise SystemExit(code) from None
+        finally: engine.dispose()
     elif args.command == "init-admin":
         import getpass
         import os
@@ -43,7 +71,7 @@ def main():
         from agenteval.config import Settings
         trusted = Settings().trusted_proxy_ips
         uvicorn.run("agenteval.api:app", host=args.host, port=args.port, workers=1,
-            proxy_headers=bool(trusted), forwarded_allow_ips=",".join(trusted))
+            proxy_headers=bool(trusted), forwarded_allow_ips=",".join(trusted), access_log=False)
 
 
 if __name__ == "__main__":

@@ -18,7 +18,7 @@ await new Promise(resolve => probe.close(resolve));
 writeFileSync(path.join(root, '.build/http-browser-fixture.json'), JSON.stringify({ endpoint: `http://127.0.0.1:${fixturePort}/invoke` }));
 const env = { ...process.env, PYTHONPATH: path.join(root, 'backend'), AGENTEVAL_DATABASE_URL: `sqlite:///${db}`, AGENTEVAL_API_TOKEN: 'local-browser-test-token-only', AGENTEVAL_AUTH_MODE: 'legacy', AGENTEVAL_EXECUTION_MODE: 'local', AGENTEVAL_SESSION_COOKIE_SECURE: '0', AGENTEVAL_SESSION_ORIGINS: `http://127.0.0.1:${process.env.AGENTEVAL_WEB_TEST_PORT || 8127}`, AGENTEVAL_JUDGE_ENDPOINT: '', AGENTEVAL_JUDGE_MODEL: '', AGENTEVAL_JUDGE_API_KEY: '',
   AGENTEVAL_ENVIRONMENT_ROOT: path.join(root, '.build', `web-environments-${randomUUID()}`),
-  AGENTEVAL_AGENT_SECRET_BROWSER_HTTP: 'browser-http-fixture-secret-not-real', AGENTEVAL_CREDENTIAL_FINGERPRINT_KEY: 'browser-fixture-fingerprint-key-not-real-32',
+  AGENTEVAL_AGENT_SECRET_BROWSER_HTTP: 'browser-http-fixture-secret-not-real', AGENTEVAL_CREDENTIAL_FINGERPRINT_KEY: 'browser-fixture-fingerprint-key-not-real-32', AGENTEVAL_REDACTION_SECRET_BROWSER: 'browser-sensitive-business-contact-only',
   AGENTEVAL_HTTP_ALLOWLIST: `127.0.0.1:9001,localhost:9001,127.0.0.1:${fixturePort}`, AGENTEVAL_BOOTSTRAP_PASSWORD: 'browser-admin-password-fixture-only' };
 const migration = spawnSync(python, ['-m', 'agenteval', 'init-db'], { cwd: root, env, stdio: 'inherit', windowsHide: true });
 if (migration.status !== 0) process.exit(migration.status || 1);

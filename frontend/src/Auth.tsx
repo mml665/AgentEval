@@ -8,6 +8,7 @@ export const AuthContext = createContext<{ identity: Identity; projectId: string
 export function useAccess() {
   const value = useContext(AuthContext);
   return { identity: value?.identity, admin: Boolean(value?.identity.is_admin),
+    projectId: value?.projectId || '',
     write: Boolean(value?.identity.is_admin || value?.identity.project_roles[value?.projectId || ''] === 'evaluator') };
 }
 

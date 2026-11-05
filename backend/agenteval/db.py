@@ -367,11 +367,27 @@ class SecurityAudit(Entity):
     status: Mapped[int | None] = mapped_column(nullable=True)
 
 
+class ProtectionPolicy(Entity):
+    __tablename__ = "protection_policies"
+    __table_args__ = (UniqueConstraint("project_id", "revision"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    revision: Mapped[int]
+    definition: Mapped[dict] = mapped_column(JSON)
+
+
+class EvidenceGrant(Entity):
+    __tablename__ = "evidence_grants"
+    __table_args__ = (UniqueConstraint("project_id", "user_id"),)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("team_users.id"))
+    raw_read: Mapped[bool] = mapped_column(default=False)
+
+
 def make_database(url: str):
     if url.startswith("sqlite:///") and ":memory:" not in url:
         Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
     kwargs = {"connect_args": {"check_same_thread": False, "timeout": 30}} if url.startswith("sqlite") else {}
-    engine = create_engine(url, **kwargs)
+    engine = create_engine(url, hide_parameters=True, **kwargs)
     if url.startswith("sqlite"):
         @event.listens_for(engine, "connect")
         def sqlite_pragmas(connection, _):
