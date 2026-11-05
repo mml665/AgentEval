@@ -85,6 +85,8 @@ def write_private(path, raw):
 # Runs in the actual image; only counts/hashes leave the database, never payloads.
 INVENTORY = """
 import json
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import select, text
 from agenteval import __version__
 from agenteval.archives import encoded
@@ -95,10 +97,17 @@ engine, _ = make_database(Settings().database_url)
 with engine.connect() as conn:
     revision = conn.execute(text('select version_num from alembic_version')).scalar()
     tables = {}
+    unsettled = {}
+    terminal = {'evaluation_runs': {'completed', 'failed', 'cancelled'},
+        'grading_batches': {'completed', 'failed'}, 'work_items': {'done', 'blocked'}}
     for table in Base.metadata.sorted_tables:
         rows = [encoded(dict(r)) for r in conn.execute(select(table).order_by(table.c.id)).mappings()]
         tables[table.name] = {'count':len(rows), 'hash':digest(rows)}
-print(json.dumps({'version':__version__, 'revision':revision, 'tables':tables}, sort_keys=True))
+        if table.name in terminal:
+            unsettled[table.name] = sum(row['status'] not in terminal[table.name] for row in rows)
+image_revision = ScriptDirectory.from_config(Config('/app/alembic.ini')).get_current_head()
+print(json.dumps({'version':__version__, 'revision':revision, 'image_revision':image_revision,
+    'tables':tables, 'unsettled':unsettled}, sort_keys=True))
 engine.dispose()
 """
 
@@ -107,20 +116,19 @@ class Stack:
     def __init__(self, runner, name, port, image):
         self.runner, self.name, self.port, self.image = runner, name, port, image
         self.origin = f"http://127.0.0.1:{port}"
-        self.override = runner.folder / (name + ".json")
+        self.override = runner.stage / (name + ".json")
         self.team, self.owned = False, False
 
     def configure(self):
         runtime = {"AGENTEVAL_LEASE_SECONDS": "3", "AGENTEVAL_AUTH_MODE": "team" if self.team else "legacy",
             "AGENTEVAL_LEGACY_TOKEN_ENABLED": "0", "AGENTEVAL_SESSION_COOKIE_SECURE": "0", "AGENTEVAL_SESSION_ORIGINS": self.origin}
         self.override.write_text(json.dumps({"services": {name: {"image": self.image,
-            "build": {"context": str(self.runner.source), "args": {"SOURCE_REVISION": self.runner.commit}},
             "environment": runtime, "restart": "no"} for name in ("api", "worker", "dispatcher")}}), encoding="utf-8")
 
     def dc(self, *args, **kwargs):
         return self.runner.command(["docker", "compose", "--env-file", str(self.runner.empty_env),
             "-f", str(self.runner.source / "docker-compose.yml"), "-f", str(self.override),
-            "-p", self.name, *args], extra={"AGENTEVAL_API_PORT": str(self.port)}, **kwargs)
+            "-p", self.name, *args], cwd=self.runner.stage, extra={"AGENTEVAL_API_PORT": str(self.port)}, **kwargs)
 
     def reserve(self):
         for resource, arguments in (("CONTAINER", ["ps", "-aq"]), ("VOLUME", ["volume", "ls", "-q"])):
@@ -138,6 +146,18 @@ class Stack:
 
     def inventory(self):
         return json.loads(self.dc("run", "--rm", "--no-deps", "-T", "api", "python", "-c", INVENTORY))
+
+    def wait_healthy(self, *services):
+        containers = [require(self.container(service), "CONTAINER_MISSING:" + service) for service in services]
+        self.runner.wait(lambda: self.runner.command(["docker", "inspect", "--format", "{{.State.Health.Status}}",
+            *containers]).decode().split() == ["healthy"] * len(containers))
+
+    def verify_image(self):
+        image = self.runner.command(["docker", "image", "inspect", self.image, "--format", "{{.Id}}"]).decode().strip()
+        ids = [require(self.container(service), "CONTAINER_MISSING:" + service) for service in ("api", "worker", "dispatcher")]
+        actual = self.runner.command(["docker", "inspect", "--format", "{{.Image}}", *ids]).decode().split()
+        require(actual == [image] * 3, "SERVICE_IMAGE_MISMATCH")
+        return image
 
 
 class Runner:
@@ -162,8 +182,8 @@ class Runner:
             "projects": [args.project, args.project[:-11] + "-restore-acceptance"]}
         self.stacks, self.started = [], time.monotonic()
 
-    def command(self, argv, extra=None, timeout=120, input=None):
-        result = subprocess.run(argv, cwd=ROOT, env={**self.env, **(extra or {})}, input=input,
+    def command(self, argv, extra=None, timeout=120, input=None, cwd=ROOT):
+        result = subprocess.run(argv, cwd=cwd, env={**self.env, **(extra or {})}, input=input,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         if result.returncode:
@@ -179,7 +199,7 @@ class Runner:
         started = time.monotonic()
         try:
             yield
-        except Exception:
+        except (Exception, KeyboardInterrupt):
             self.report["failed_step"] = name
             raise
         else:
@@ -226,13 +246,16 @@ class Runner:
         with self.step("reserve_new_projects"):
             source.reserve(); recovered.reserve()
         with self.step("build_current_package"):
-            source.dc("build", "api", timeout=1200)
+            # A relative context in the ASCII staging cwd avoids Windows Bake path encoding.
+            self.command(["docker", "build", "--build-arg", "SOURCE_REVISION=" + self.commit,
+                "-t", image, "."], cwd=self.source, timeout=900)
             self.report["image_id"] = self.command(["docker", "image", "inspect", image, "--format", "{{.Id}}"]).decode().strip()
             self.report["docker_version"] = self.command(["docker", "version", "--format", "{{.Server.Version}}"]).decode().strip()
         with source.client() as client:
             with self.step("start_and_migrate_all_services"):
                 source.dc("up", "-d", "--no-build", timeout=180)
                 self.wait(lambda: client.get("/ready").status_code == 200)
+                require(source.verify_image() == self.report["image_id"], "SOURCE_IMAGE_CHANGED")
                 require(client.get("/").status_code == 200, "FRONTEND_UNAVAILABLE")
                 source.dc("exec", "-T", "api", "python", "-m", "agenteval", "init-db")
             with self.step("queued_work_survives_postgres_redis_api_restart"):
@@ -256,9 +279,12 @@ class Runner:
             with self.step("quiesced_database_and_environment_backup"):
                 source.dc("stop", "worker", "dispatcher", "api")
                 before = source.inventory()
+                require(before["revision"] == before["image_revision"], "SOURCE_MIGRATION_INCOMPLETE")
+                require(not any(before["unsettled"].values()), "UNSETTLED_WORK_IN_BACKUP")
                 self.report["database_before"] = before
                 dump = source.dc("exec", "-T", "db", "pg_dump", "-U", "agenteval", "-d", "agenteval", "-Fc")
-                write_private(self.folder / "database.dump", dump)
+                backup = self.folder / "database.dump"
+                write_private(backup, dump)
                 environment = self.folder / "environments"
                 environment.mkdir()
                 self.command(["docker", "cp", source.container("api") + ":/app/data/environments/.", str(environment)])
@@ -268,7 +294,10 @@ class Runner:
             with self.step("restore_new_database_environment_and_fixed_reports"):
                 recovered.team = True; recovered.configure()
                 recovered.dc("up", "-d", "db", "redis", timeout=180)
-                recovered.dc("exec", "-T", "db", "pg_restore", "-U", "agenteval", "-d", "agenteval", "--exit-on-error", input=dump)
+                recovered.wait_healthy("db", "redis")
+                restored_dump = backup.read_bytes()
+                require(hashlib.sha256(restored_dump).hexdigest() == self.report["backup"]["database_sha256"], "BACKUP_FILE_CHANGED")
+                recovered.dc("exec", "-T", "db", "pg_restore", "-U", "agenteval", "-d", "agenteval", "--exit-on-error", input=restored_dump)
                 recovered.dc("run", "--rm", "--no-deps", "-T", "api", "python", "-m", "agenteval", "init-db")
                 after = recovered.inventory()
                 require(after == before, "DATABASE_ROUNDTRIP_MISMATCH")
@@ -281,7 +310,8 @@ class Runner:
                 require(file_manifest(verified) == files, "ENVIRONMENT_ROUNDTRIP_MISMATCH")
                 self.report["database_after_restore"] = after
                 recovered.dc("up", "-d", "--no-build", timeout=180)
-                self.verify_recovery(recovered, demo, snapshots)
+                require(recovered.verify_image() == self.report["image_id"], "RESTORED_IMAGE_CHANGED")
+                self.report["restore_verification_run_id"] = self.verify_recovery(recovered, demo, snapshots)
             if self.args.rollback_ref:
                 with self.step("prior_package_rollback_without_database_downgrade"):
                     self.rollback(recovered, before, image, demo, snapshots)
@@ -297,6 +327,7 @@ class Runner:
                 "assertions": {"expected_output": {"order_id": "1001", "status": "shipped"}}}]}})
         require(self.get(client, "evaluations/" + queued["id"])["status"] == "queued", "NOT_QUEUED")
         stack.dc("restart", "db", "redis")
+        stack.wait_healthy("db", "redis")
         stack.dc("restart", "api")
         self.wait(lambda: client.get("/health").status_code == 200)
         require(self.get(client, "evaluations/" + queued["id"])["status"] == "queued", "QUEUE_LOST")
@@ -356,6 +387,12 @@ class Runner:
             require(reader.post("/api/v1/agents", json={"project_id": demo["project_id"], "name": "deny", "adapter_type": "python"}).status_code == 403, "RESTORED_ROLE_CHANGED")
             with stack.client() as legacy:
                 require(legacy.get("/api/v1/projects").status_code == 401, "RESTORED_LEGACY_ENABLED")
+            previous = self.get(admin, "evaluations/" + demo["fixed_run_id"])
+            run = self.post(admin, "evaluations", {k: previous[k] for k in (
+                "agent_version_id", "benchmark_version_id", "profile_version_id")})
+            self.settled(admin, run["id"])
+            require(self.get(admin, f"evaluations/{run['id']}/report")["success_rate"] == 1, "RESTORED_EXECUTION_FAILED")
+            return run["id"]
 
     def rollback(self, stack, before, image, demo, snapshots):
         ref = self.command(["git", "rev-parse", "--verify", self.args.rollback_ref + "^{commit}"]).decode().strip()
@@ -363,15 +400,17 @@ class Runner:
         previous = self.stage / "previous"
         unpack_source(self.command(["git", "archive", ref]), previous)
         previous_image = image + "-previous"
-        self.command(["docker", "build", "-t", previous_image, str(previous)], timeout=1200)
+        self.command(["docker", "build", "-t", previous_image, "."], cwd=previous, timeout=900)
         stack.dc("stop", "worker", "dispatcher", "api")
         stack.image = previous_image; stack.configure()
         old = stack.inventory()
-        require(old["revision"] == before["revision"] and old["tables"].keys() == before["tables"].keys(), "ROLLBACK_SCHEMA_INCOMPATIBLE")
+        require(old["revision"] == old["image_revision"] == before["revision"]
+            and old["tables"].keys() == before["tables"].keys(), "ROLLBACK_SCHEMA_INCOMPATIBLE")
         stack.dc("up", "-d", "--no-build", timeout=180)
-        self.verify_recovery(stack, demo, snapshots)
+        image_id = stack.verify_image()
+        verified_run_id = self.verify_recovery(stack, demo, snapshots)
         self.report["rollback"] = {"commit": ref, "version": old["version"], "database_revision": old["revision"],
-            "image_id": self.command(["docker", "image", "inspect", previous_image, "--format", "{{.Id}}"]).decode().strip(),
+            "image_id": image_id, "verification_run_id": verified_run_id,
             "strategy": "Compatible code rollback on restored copy, no schema downgrade"}
 
     def finish(self, error=None):
@@ -400,7 +439,7 @@ def main():
         runner = Runner(args, Path(directory))
         try:
             runner.execute()
-        except Exception as exc:
+        except (Exception, KeyboardInterrupt) as exc:
             error = exc
             print("Acceptance failed: " + (str(exc) if isinstance(exc, AcceptanceError) else type(exc).__name__), file=sys.stderr)
         passed = runner.finish(error)

@@ -2,9 +2,9 @@
 import argparse
 import io
 import json
-from pathlib import Path
 from types import SimpleNamespace
 import tarfile
+import time
 
 import pytest
 from scripts.deployment_acceptance import (AcceptanceError, Runner, Stack, clean_environment,
@@ -44,7 +44,7 @@ def test_deployment_never_owns_or_stops_an_existing_project(tmp_path, occupied):
     def command(argv):
         commands.append(argv)
         return b"existing" if ("volume" in argv) == (occupied == "volume") else b""
-    runner = SimpleNamespace(folder=tmp_path, command=command, source=tmp_path, commit="fixture")
+    runner = SimpleNamespace(stage=tmp_path, command=command)
     stack = Stack(runner, "ae-acceptance", 8139, "fixture-image")
     with pytest.raises(AcceptanceError, match="EXISTING_PROJECT"):
         stack.reserve()
@@ -55,7 +55,7 @@ def test_deployment_never_owns_or_stops_an_existing_project(tmp_path, occupied):
 def test_deployment_error_report_stops_only_owned_stacks_and_retains_backups(tmp_path):
     calls = []
     runner = Runner.__new__(Runner)
-    runner.folder, runner.started, runner.report = tmp_path, __import__("time").monotonic(), {"checks": []}
+    runner.folder, runner.started, runner.report = tmp_path, time.monotonic(), {"checks": []}
     runner.stacks = [SimpleNamespace(owned=False, dc=lambda *a, **k: pytest.fail("Foreign stack touched")),
         SimpleNamespace(owned=True, dc=lambda *a, **k: calls.append(a))]
     write_private(tmp_path / "database.dump", b"fixture backup")
