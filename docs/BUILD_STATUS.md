@@ -11,6 +11,7 @@
 - AE-003 新增响应、Trace、独立状态及评分的 JSON 字节统计，原字符指标继续兼容。
 - 证据容量阈值随项目策略发布。留存核查按超期或发布引用分页，固定发布快照的引用按运行去重。
 - 5,000 条合成运行的隔离试验纳入 CI。接口、权限和验证边界见 [0.13 交付](V0.13_EVIDENCE_INVENTORY.md)。
+- `d1236dd` 的 193 项 Python、19 项浏览器及 PostgreSQL 集成均通过。 [CI 结果](https://github.com/mml665/AgentEval/actions/runs/42171410214)
 
 ## 0.12.1 产品复查交付
 
