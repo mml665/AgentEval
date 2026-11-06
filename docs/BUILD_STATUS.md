@@ -12,6 +12,7 @@
 - R12-04～05 统一创建评测入口和预检，范围查询支持直接按 ID 还原及逐层分页。
 - 交付逐用例差异、主动加载样例、个人草稿冲突选择及本地日历筛选。说明见 [0.12.1 交付](V0.12.1_REVIEW_DELIVERY.md)。
 - 本地 192 项 Python 和 19 项浏览器回归通过。隔离库 10,051 次运行可直达最早的固定批次。
+- `1a5435e` 的 [普通 CI](https://github.com/mml665/AgentEval/actions/runs/42169336973) 与 [Linux 恢复及回滚至 0.12.0](https://github.com/mml665/AgentEval/actions/runs/42169373087) 均通过。
 
 ## 0.12 运维交付
 
