@@ -1,11 +1,13 @@
 """Policy management, explicit raw-reading grants and evidence inventory."""
-from datetime import datetime, timezone, timedelta
-from fastapi import Depends, HTTPException, Request
+from typing import Literal
+
+from fastapi import Depends, HTTPException, Query, Request
 from pydantic import Field, field_validator
-from sqlalchemy import select, func, cast, String
+from sqlalchemy import select, func
 from agenteval.contracts import Contract, digest
-from agenteval.db import (CredentialVersion, EvidenceGrant, EvaluationResult, Execution, GradingBatch, Project,
-    ProjectMembership, ProtectionPolicy, ReleaseDecision, Run, SecurityAudit, TeamUser, TraceSpan, Trial, TestCase)
+from agenteval.db import (EvidenceGrant, EvaluationResult, Execution, GradingBatch, Project,
+    ProjectMembership, ProtectionPolicy, Run, SecurityAudit, TeamUser, TraceSpan, Trial, TestCase)
+from agenteval.evidence_inventory import run_inventory, summary
 from agenteval.security import lock_security
 
 
@@ -15,6 +17,7 @@ class PolicyChange(Contract):
     secret_env_names: list[str] = Field(default_factory=list, max_length=30)
     redact_emails: bool = True
     retention_days: int | None = Field(default=None, ge=1, le=36500)
+    evidence_warning_bytes: int | None = Field(default=None, strict=True, ge=1, le=2**50)
 
     @field_validator("paths")
     @classmethod
@@ -58,11 +61,17 @@ def original_bundle(session, run):
 
 
 def install(router, settings, sessions, database, get, serialize):
+    def latest_policy(session, project_id):
+        return session.scalar(select(ProtectionPolicy).where(ProtectionPolicy.project_id == project_id)
+            .order_by(ProtectionPolicy.revision.desc()).limit(1))
+
     @router.get("/protection/policy/{project_id}")
     def policy(project_id: str, session=Depends(database)):
         get(session, Project, project_id)
-        row = session.scalar(select(ProtectionPolicy).where(ProtectionPolicy.project_id == project_id).order_by(ProtectionPolicy.revision.desc()).limit(1))
-        definition = {k:v for k,v in row.definition.items() if k != "secret_fingerprints"} if row else PolicyChange().model_dump(exclude={"expected_revision"})
+        row = latest_policy(session, project_id)
+        definition = PolicyChange().model_dump(exclude={"expected_revision"})
+        if row:
+            definition.update({k: v for k, v in row.definition.items() if k != "secret_fingerprints"})
         return {"id": row.id if row else None, "revision": row.revision if row else 0, "definition": definition}
 
     @router.post("/protection/policy/{project_id}", status_code=201)
@@ -71,11 +80,15 @@ def install(router, settings, sessions, database, get, serialize):
         if any(not os.getenv(name) for name in body.secret_env_names): raise HTTPException(422, detail={"code": "REDACTION_SECRET_UNAVAILABLE"})
         with sessions() as session:
             lock_security(session); get(session, Project, project_id)
-            revision = session.scalar(select(func.max(ProtectionPolicy.revision)).where(ProtectionPolicy.project_id == project_id)) or 0
+            previous = latest_policy(session, project_id)
+            revision = previous.revision if previous else 0
             if revision != body.expected_revision: raise HTTPException(409, detail={"code": "PROTECTION_REVISION_CONFLICT"})
             from agenteval.credentials import fingerprint, CredentialError
             from agenteval.db import uid
-            row = ProtectionPolicy(id=uid(), project_id=project_id, revision=revision+1, definition=body.model_dump(exclude={"expected_revision"}))
+            definition = body.model_dump(exclude={"expected_revision"})
+            if previous and "evidence_warning_bytes" not in body.model_fields_set:
+                definition["evidence_warning_bytes"] = previous.definition.get("evidence_warning_bytes")
+            row = ProtectionPolicy(id=uid(), project_id=project_id, revision=revision+1, definition=definition)
             try: hashes = {name: fingerprint(os.getenv(name), settings.credential_fingerprint_key, row.id) for name in body.secret_env_names}
             except CredentialError: raise HTTPException(422, detail={"code": "CREDENTIAL_PROVIDER_NOT_CONFIGURED"}) from None
             row.definition = {**row.definition, "secret_fingerprints": hashes}
@@ -117,18 +130,18 @@ def install(router, settings, sessions, database, get, serialize):
     @router.get("/protection/storage/{project_id}")
     def storage(project_id: str, session=Depends(database)):
         get(session, Project, project_id)
-        row = session.scalar(select(ProtectionPolicy).where(ProtectionPolicy.project_id == project_id).order_by(ProtectionPolicy.revision.desc()).limit(1))
-        days = row.definition.get("retention_days") if row else None
-        runs = list(session.scalars(select(Run).where(Run.project_id == project_id)))
-        referenced = set()
-        for decision in session.scalars(select(ReleaseDecision).where(ReleaseDecision.project_id == project_id)):
-            for side in ("baseline", "candidate"):
-                referenced.add(decision.snapshot["comparison"][side]["run_id"])
-        old = [r.id for r in runs if days is not None and r.created_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)-timedelta(days=days)]
-        execution_ids = select(Execution.id).join(Trial).join(Run).where(Run.project_id == project_id)
-        characters = session.scalar(select(func.coalesce(func.sum(func.length(cast(Execution.response, String))), 0)).where(Execution.id.in_(execution_ids)))
-        characters += session.scalar(select(func.coalesce(func.sum(func.length(cast(TraceSpan.record, String))), 0)).where(TraceSpan.execution_id.in_(execution_ids)))
-        return {"project_id": project_id, "runs": len(runs), "release_referenced_runs": len(referenced), "retention_days": days,
-            "past_retention_runs": len(old), "past_retention_release_holds": len(set(old) & referenced),
-            "response_and_trace_json_characters": characters, "capacity_scope": "Serialized response and trace character count; not physical disk bytes or all evidence tables.",
-            "automatic_deletion": False, "archive_mode": "non_destructive_project_snapshot", "scope": "Age is advisory; fixed evidence and original rows are retained."}
+        row = latest_policy(session, project_id)
+        definition = row.definition if row else {}
+        return summary(session, project_id, definition.get("retention_days"), definition.get("evidence_warning_bytes"))
+
+    @router.get("/protection/storage/{project_id}/runs")
+    def storage_runs(project_id: str, review: Literal["overdue", "referenced"] = "overdue",
+        offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+        get(session, Project, project_id)
+        row = latest_policy(session, project_id)
+        runs = run_inventory(project_id, row.definition.get("retention_days") if row else None).subquery()
+        condition = runs.c.past_retention if review == "overdue" else runs.c.release_referenced
+        query = select(runs).where(condition)
+        total = session.scalar(select(func.count()).select_from(runs).where(condition))
+        items = session.execute(query.order_by(runs.c.created_at, runs.c.id).offset(offset).limit(limit)).mappings()
+        return {"items": [dict(item) for item in items], "total": total, "offset": offset, "limit": limit}

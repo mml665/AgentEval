@@ -137,7 +137,8 @@ class DisplayProtection:
             owner_draft = scope.get("state", {}).get("draft_owner_authorized", False) and route == "/api/v1/onboarding/drafts/{project_id}" and scope.get("method") == "GET"
             control = scope["path"].startswith("/api/v1/auth/") or (
                 scope["path"].startswith("/api/v1/team/") and not scope["path"].startswith("/api/v1/team/audit")) or route in {
-                    "/api/v1/protection/policy/{project_id}", "/api/v1/protection/grants/{project_id}", "/api/v1/protection/storage/{project_id}"}
+                    "/api/v1/protection/policy/{project_id}", "/api/v1/protection/grants/{project_id}",
+                    "/api/v1/protection/storage/{project_id}", "/api/v1/protection/storage/{project_id}/runs"}
             control |= owner_draft
             media = next((v for k,v in headers if k.lower() == b"content-type"), b"")
             if overflow:

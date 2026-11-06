@@ -1,11 +1,12 @@
 from copy import deepcopy
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from urllib.parse import quote
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from agenteval.contracts import digest
 from agenteval.db import Execution, Run, SecurityAudit, TraceSpan
 from agenteval.protection import MARKER, ViewPolicy, redact
@@ -100,6 +101,50 @@ def test_policy_versions_cannot_be_overwritten_and_are_admin_only(team):
     assert t["admin"].post(path, json={}).status_code == 409
     second = t["post"]("protection/policy/" + t["a"]["id"], {"expected_revision": 1, "redact_emails": False})
     assert first["id"] != second["id"] and second["revision"] == 2
+
+
+def test_project_inventory_counts_bytes_and_pages_retention_without_double_counting_releases(team):
+    t = team
+    project_id = t["a"]["id"]
+    source = resources(t, t["a"])
+    held = source["run"]["id"]
+    unheld = t["post"]("evaluations", source["body"])["id"]
+    t["post"]("release-decisions", {"comparison_id": source["comparison"]["id"]})
+    t["post"]("protection/policy/" + project_id, {"retention_days": 30, "evidence_warning_bytes": 1})
+    # A legacy policy client can publish another revision without erasing the newer field.
+    t["post"]("protection/policy/" + project_id, {"expected_revision": 1, "retention_days": 30})
+
+    reader = t["reader"]["client"]
+    endpoint = "/api/v1/protection/storage/" + project_id
+    before = reader.get(endpoint).json()
+    assert before["past_retention_runs"] == 0 and before["release_referenced_runs"] == 1
+    assert before["warning_reached"] and before["evidence_warning_bytes"] == 1
+    old = datetime.now(timezone.utc) - timedelta(days=31)
+    with t["app"].state.sessions() as session:
+        for run_id in (held, unheld):
+            session.get(Run, run_id).created_at = old
+        # Persist literal multibyte JSON in SQLite to distinguish bytes from characters.
+        payload = '{"content":"证据"}'
+        query = text("UPDATE case_executions SET response = :payload WHERE id = :identifier")
+        session.execute(query, {"payload": payload, "identifier": source["execution_id"]})
+        session.commit()
+        original_bytes = session.scalar(text("SELECT length(CAST(response AS BLOB)) FROM case_executions WHERE id = :identifier"),
+            {"identifier": source["execution_id"]})
+    assert original_bytes == len(payload.encode("utf-8")) > len(payload)
+    inventory = reader.get(endpoint).json()
+    assert (inventory["runs"], inventory["past_retention_runs"], inventory["past_retention_release_holds"]) == (2, 2, 1)
+    assert inventory["evidence_json_bytes"] == sum(inventory["evidence_json_bytes_by_kind"].values())
+    assert inventory["evidence_json_bytes_by_kind"]["responses"] + inventory["evidence_json_bytes_by_kind"]["trace"] > inventory["response_and_trace_json_characters"]
+    pages = [reader.get(endpoint + "/runs", params={"limit": 1, "offset": index}).json() for index in range(2)]
+    assert [page["total"] for page in pages] == [2, 2]
+    assert {item["id"]: item["release_referenced"] for page in pages for item in page["items"]} == {held: True, unheld: False}
+    referenced = reader.get(endpoint + "/runs", params={"review": "referenced"}).json()
+    assert referenced["total"] == 1 and referenced["items"][0]["id"] == held
+    assert t["outsider"]["client"].get(endpoint + "/runs").status_code == 404
+    t["post"]("protection/policy/" + project_id, {"expected_revision": 2, "evidence_warning_bytes": None})
+    cleared = reader.get(endpoint).json()
+    assert cleared["evidence_warning_bytes"] is None and not cleared["warning_reached"]
+    assert cleared["past_retention_runs"] == 0 and cleared["release_referenced_runs"] == 1
 
 
 def test_unexpected_api_exception_never_logs_or_returns_original_payload(team, caplog):

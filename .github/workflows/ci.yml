@@ -58,7 +58,11 @@ jobs:
       - run: python scripts/v05_smoke.py
       - run: python scripts/product_smoke.py
       - run: python scripts/team_smoke.py
-      - run: python scripts/protection_smoke.py
+      - run: python scripts/protection_smoke.py --inventory-runs 5000
+      - uses: actions/upload-artifact@v4
+        with:
+          name: evidence-inventory-fixture
+          path: .build/protection-smoke.json
   postgres:
     runs-on: ubuntu-latest
     services:

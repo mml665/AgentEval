@@ -24,6 +24,7 @@ SCOPED_ROUTES = {
     "/onboarding/preview", "/onboarding/reuse-preview", "/onboarding/reuse", "/onboarding/requests/{request_key}", "/onboarding/drafts/{project_id}",
     "/evaluations/{run_id}/reuse-config", "/benchmarks/{benchmark_id}/preview", "/benchmarks/{benchmark_id}/publish", "/benchmark-versions/{version_id}/diff", "/quality/baselines/{project_id}",
     "/protection/policy/{project_id}", "/protection/grants/{project_id}", "/protection/storage/{project_id}", "/protection/evaluations/{run_id}/raw",
+    "/protection/storage/{project_id}/runs",
     "/agents", "/agents/{agent_id}/versions", "/benchmarks", "/benchmarks/{benchmark_id}/versions", "/benchmark-versions/{version_id}/cases",
     "/profile-versions", "/evaluations", "/evaluations/{run_id}", "/evaluations/{run_id}/cancel", "/evaluations/{run_id}/regrade",
     "/evaluations/{run_id}/report", "/evaluations/{run_id}/results", "/evaluations/{run_id}/bad-cases", "/evaluations/{run_id}/work-items",
