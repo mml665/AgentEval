@@ -8,7 +8,7 @@ const messages: Record<string, string> = {
   CASE_DOCUMENT_INVALID: '用例预检失败，请按下方行号、case_key 和字段位置修复；未发布任何版本。',
   BENCHMARK_IDENTITY_MISMATCH: '只能比较同一 Benchmark 身份下的两个固定版本。',
   BASELINE_REVISION_CONFLICT: '显式基线已被更新，请刷新范围后再保存。',
-  DRAFT_REVISION_CONFLICT: '个人草稿已被其他页面更新，当前输入仍在内存中，请刷新并恢复后再保存。',
+  DRAFT_REVISION_CONFLICT: '个人草稿已被其他页面更新，请先读取最新修订，再选择使用哪份配置。',
   PERSONAL_DRAFT_REQUIRED: '服务端草稿仅供个人账户使用，按成员和项目隔离。',
   RAW_EVIDENCE_PERMISSION_REQUIRED: '原始证据需要个人管理员或项目专项授权；共享和机器令牌不能读取。',
   REDACTION_SECRET_UNAVAILABLE: '服务端缺少内容脱敏变量，请由部署管理员配置后再发布策略。',

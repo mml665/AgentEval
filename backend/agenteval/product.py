@@ -19,7 +19,7 @@ from agenteval.product_contracts import (ConnectionCheck, CreateRelease, GuidedR
 from agenteval.quality import case_identity, release_snapshot
 from agenteval.service import report
 from agenteval.issue_scopes import INACTIVE, collect_anomalies, applicable_records, scope_for
-from agenteval.scope_api import resolve_scope, comparison_query
+from agenteval.scope_api import comparison_query, resolve_scope, scoped_issues
 
 
 def install(router, settings, database, get, serialize, create_run, runner):
@@ -69,11 +69,11 @@ def install(router, settings, database, get, serialize, create_run, runner):
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
 
     @router.get("/quality/comparisons")
-    def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
+    def quality_comparisons(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, baseline_run_id: str | None = None, candidate_run_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=100), session=Depends(database)):
         from agenteval.comparison_context import views
         query = select(Comparison).join(Run, Run.id == Comparison.report["candidate"]["run_id"].as_string()).where(Run.project_id == project_id)
-        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, candidate_run_id, baseline_run_id, candidate_batch_id, baseline_batch_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id, baseline_run_id, candidate_run_id)
             query = comparison_query(scope)
         return {"items": views(session, list(session.scalars(query.order_by(Comparison.created_at.desc(), Comparison.id).offset(offset).limit(limit))), serialize),
             "total": session.scalar(select(func.count()).select_from(query.subquery()))}
@@ -149,12 +149,12 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return {"items": imported, "source_batch_id": batch.id}
 
     @router.get("/quality/issues")
-    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, assignee_user_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def issues(project_id: str, status: str | None = None, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, baseline_run_id: str | None = None, candidate_run_id: str | None = None, assignee_user_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         get(session, Project, project_id)
         query = select(QualityIssue).where(QualityIssue.project_id == project_id)
-        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
-            ids = [i.id for i, _ in applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])]
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, candidate_run_id, baseline_run_id, candidate_batch_id, baseline_batch_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id, baseline_run_id, candidate_run_id)
+            ids = [issue.id for issue, _ in scoped_issues(session, project_id, scope)]
             query = query.where(QualityIssue.id.in_(ids))
         if assignee_user_id: query = query.where(QualityIssue.assignee_user_id == assignee_user_id)
         grouped = list(session.execute(query.with_only_columns(QualityIssue.kind, QualityIssue.status, func.count()).group_by(QualityIssue.kind, QualityIssue.status)))
@@ -324,10 +324,10 @@ def install(router, settings, database, get, serialize, create_run, runner):
         return {**serialize(row), "current_validity": current_validity(session, row)}
 
     @router.get("/release-decisions")
-    def release_list(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
+    def release_list(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None, baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, baseline_run_id: str | None = None, candidate_run_id: str | None = None, offset: int = Query(0, ge=0), limit: int = Query(25, ge=1, le=100), session=Depends(database)):
         query = select(ReleaseDecision).where(ReleaseDecision.project_id == project_id)
-        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
-            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
+        if any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, candidate_run_id, baseline_run_id, candidate_batch_id, baseline_batch_id)):
+            scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id, baseline_run_id, candidate_run_id)
             query = comparison_query(scope, decision=True).where(ReleaseDecision.project_id == project_id)
         return {"items": [decision_view(session, d) for d in session.scalars(query.order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id).offset(offset).limit(limit))],
                 "total": session.scalar(select(func.count()).select_from(query.subquery()))}

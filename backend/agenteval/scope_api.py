@@ -11,8 +11,20 @@ from agenteval.product_contracts import BulkIssues, IngestionPolicy, ScopeUpdate
 from agenteval.service import report
 
 
-def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=None, baseline_version_id=None, benchmark_version_id=None, baseline_batch_id=None, candidate_batch_id=None):
+def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=None, baseline_version_id=None, benchmark_version_id=None,
+                  baseline_batch_id=None, candidate_batch_id=None, baseline_run_id=None, candidate_run_id=None):
     get(session, Project, project_id)
+    if candidate_run_id or candidate_batch_id:
+        source_id = candidate_run_id or get(session, GradingBatch, candidate_batch_id).run_id
+        source = get(session, Run, source_id)
+        if source.project_id != project_id:
+            raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
+        agent_id = agent_id or get(session, AgentVersion, source.agent_version_id).agent_id
+        candidate_version_id = candidate_version_id or source.agent_version_id
+        benchmark_version_id = benchmark_version_id or source.benchmark_version_id
+        if candidate_run_id and candidate_batch_id is None:
+            candidate_batch_id = session.scalar(select(GradingBatch.id).where(GradingBatch.run_id == source.id,
+                GradingBatch.status == "completed").order_by(GradingBatch.revision.desc(), GradingBatch.id).limit(1))
     if not any((agent_id, candidate_version_id, baseline_version_id, benchmark_version_id)):
         run = session.scalar(select(Run).where(Run.project_id == project_id, Run.status.in_(["completed", "cancelled"])).order_by(Run.created_at.desc(), Run.id))
         if not run:
@@ -27,22 +39,32 @@ def resolve_scope(session, get, project_id, agent_id=None, candidate_version_id=
     from agenteval.db import Benchmark
     if agent.project_id != project_id or candidate.agent_id != agent.id or get(session, Benchmark, benchmark.benchmark_id).project_id != project_id:
         raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
+    if not baseline_version_id and (baseline_run_id or baseline_batch_id):
+        source_id = baseline_run_id or get(session, GradingBatch, baseline_batch_id).run_id
+        baseline_version_id = get(session, Run, source_id).agent_version_id
+    if baseline_run_id and baseline_batch_id is None:
+        baseline_batch_id = session.scalar(select(GradingBatch.id).where(GradingBatch.run_id == baseline_run_id,
+            GradingBatch.status == "completed").order_by(GradingBatch.revision.desc(), GradingBatch.id).limit(1))
     if baseline_version_id is None:
         from agenteval.db import BaselineSetting
         saved = session.scalar(select(BaselineSetting).where(BaselineSetting.project_id == project_id, BaselineSetting.agent_id == agent_id, BaselineSetting.benchmark_version_id == benchmark_version_id))
         if saved:
             baseline_batch_id = baseline_batch_id or saved.grading_batch_id
             baseline_version_id = get(session, Run, get(session, GradingBatch, baseline_batch_id).run_id).agent_version_id
-    for batch_id, expected in ((candidate_batch_id, candidate_version_id), (baseline_batch_id, baseline_version_id)):
-        if batch_id:
-            batch = get(session, GradingBatch, batch_id); run = get(session, Run, batch.run_id)
-            if run.project_id != project_id or run.agent_version_id != expected or run.benchmark_version_id != benchmark_version_id or batch.status != "completed":
+    for run_id, batch_id, expected in ((candidate_run_id, candidate_batch_id, candidate_version_id),
+                                       (baseline_run_id, baseline_batch_id, baseline_version_id)):
+        if run_id or batch_id:
+            batch = get(session, GradingBatch, batch_id) if batch_id else None
+            run = get(session, Run, run_id or batch.run_id)
+            if (run.project_id != project_id or run.agent_version_id != expected or run.benchmark_version_id != benchmark_version_id
+                or batch and (batch.run_id != run.id or not run_id and batch.status != "completed")):
                 raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
     if baseline_version_id and get(session, AgentVersion, baseline_version_id).agent_id != agent_id:
         raise HTTPException(422, detail={"code": "EVALUATION_SCOPE_MISMATCH"})
     return {"agent_id": agent_id, "candidate_version_id": candidate_version_id, "baseline_version_id": baseline_version_id,
         "benchmark_id": benchmark.benchmark_id, "benchmark_version_id": benchmark_version_id,
         "candidate_batch_id": candidate_batch_id, "baseline_batch_id": baseline_batch_id,
+        "candidate_run_id": candidate_run_id, "baseline_run_id": baseline_run_id,
         "agent_name": agent.name, "candidate_label": f"{agent.name} · v{candidate.version}"}
 
 
@@ -61,10 +83,24 @@ def comparison_query(scope, decision=False):
         query = query.where(False)
     if scope.get("candidate_batch_id"): query = query.where(Comparison.report["candidate_batch_id"].as_string() == scope["candidate_batch_id"])
     if scope.get("baseline_batch_id"): query = query.where(Comparison.report["baseline_batch_id"].as_string() == scope["baseline_batch_id"])
+    if scope.get("candidate_run_id"):
+        query = query.where(candidate.id == scope["candidate_run_id"]) if scope.get("candidate_batch_id") else query.where(False)
+    if scope.get("baseline_run_id"):
+        query = query.where(baseline.id == scope["baseline_run_id"]) if scope.get("baseline_batch_id") else query.where(False)
     return query
 
 
+def scoped_issues(session, project_id, scope):
+    rows = applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])
+    if scope.get("candidate_run_id"):
+        rows = [(issue, record) for issue, record in rows
+            if issue.kind == "issue" or issue.batch_id == scope["candidate_batch_id"]]
+    return rows
+
+
 def install(router, database, get, serialize, runner, issue_view):
+    from agenteval.scope_selection import install as install_selection
+    install_selection(router, database, get)
     @router.get("/quality/policy/{project_id}")
     def get_policy(project_id: str, session=Depends(database)):
         get(session, Project, project_id)
@@ -139,19 +175,25 @@ def install(router, database, get, serialize, runner, issue_view):
 
     @router.get("/quality/workbench/{project_id}")
     def workbench(project_id: str, agent_id: str | None = None, candidate_version_id: str | None = None,
-        baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None, candidate_batch_id: str | None = None, session=Depends(database)):
-        scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id, baseline_batch_id, candidate_batch_id)
+        baseline_version_id: str | None = None, benchmark_version_id: str | None = None, baseline_batch_id: str | None = None,
+        candidate_batch_id: str | None = None, baseline_run_id: str | None = None, candidate_run_id: str | None = None, session=Depends(database)):
+        scope = resolve_scope(session, get, project_id, agent_id, candidate_version_id, baseline_version_id, benchmark_version_id,
+            baseline_batch_id, candidate_batch_id, baseline_run_id, candidate_run_id)
         if not scope:
             return {"evaluation_scope": None, "open_issues": 0, "pending_anomalies": 0, "blocking_issues": 0, "candidate": None,
                 "comparison": None, "latest_decision": None, "priorities": [], "version_labels": {}, "scope": "尚无已完成评测。"}
-        records = applicable_records(session, project_id, scope["agent_id"], scope["candidate_version_id"], scope["benchmark_version_id"])
+        records = scoped_issues(session, project_id, scope)
         active = [i for i, _ in records if i.status not in INACTIVE]
         formal = [i for i in active if i.kind == "issue"]
         comparison = session.scalar(comparison_query(scope).order_by(Comparison.created_at.desc(), Comparison.id))
-        latest = session.scalar(select(GradingBatch).join(Run, Run.id == GradingBatch.run_id).where(Run.project_id == project_id,
-            Run.agent_version_id == scope["candidate_version_id"], Run.benchmark_version_id == scope["benchmark_version_id"],
-            GradingBatch.status == "completed").order_by(GradingBatch.created_at.desc(), GradingBatch.id))
-        if scope.get("candidate_batch_id"): latest = get(session, GradingBatch, scope["candidate_batch_id"])
+        latest = None
+        if scope.get("candidate_batch_id"):
+            batch = get(session, GradingBatch, scope["candidate_batch_id"])
+            if batch.status == "completed": latest = batch
+        elif not scope.get("candidate_run_id"):
+            latest = session.scalar(select(GradingBatch).join(Run, Run.id == GradingBatch.run_id).where(Run.project_id == project_id,
+                Run.agent_version_id == scope["candidate_version_id"], Run.benchmark_version_id == scope["benchmark_version_id"],
+                GradingBatch.status == "completed").order_by(GradingBatch.created_at.desc(), GradingBatch.id).limit(1))
         candidate = comparison.report["candidate"] if comparison else report(session, latest) if latest else None
         decision = session.scalar(select(ReleaseDecision).where(ReleaseDecision.comparison_id == comparison.id).order_by(ReleaseDecision.created_at.desc(), ReleaseDecision.id)) if comparison else None
         labels = {"candidate": scope["candidate_label"]}

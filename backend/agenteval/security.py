@@ -19,6 +19,7 @@ actor_context = ContextVar("http_actor", default=None)
 MUTATING_EVENTS = {"developer_update", "scope_changed", "bulk_confirm", "bulk_ignore", "bulk_merge", "bulk_assign",
     "retest_started", "retest", "promoted_to_regression"}
 SCOPED_ROUTES = {
+    "/quality/scope-options/{project_id}", "/quality/scope-selection/{project_id}",
     "/workspace-versions/{project_id}",
     "/onboarding/preview", "/onboarding/reuse-preview", "/onboarding/reuse", "/onboarding/requests/{request_key}", "/onboarding/drafts/{project_id}",
     "/evaluations/{run_id}/reuse-config", "/benchmarks/{benchmark_id}/preview", "/benchmarks/{benchmark_id}/publish", "/benchmark-versions/{version_id}/diff", "/quality/baselines/{project_id}",
@@ -212,7 +213,8 @@ class Security:
             mappings = {"project_id": Project, "agent_id": Agent, "agent_version_id": AgentVersion,
                 "candidate_version_id": AgentVersion, "baseline_version_id": AgentVersion,
                 "benchmark_id": Benchmark, "benchmark_version_id": BenchmarkVersion, "profile_version_id": ProfileVersion,
-                "run_id": Run, "grading_batch_id": GradingBatch, "baseline_batch_id": GradingBatch, "candidate_batch_id": GradingBatch,
+                "run_id": Run, "baseline_run_id": Run, "candidate_run_id": Run, "grading_batch_id": GradingBatch,
+                "baseline_batch_id": GradingBatch, "candidate_batch_id": GradingBatch,
                 "execution_id": Execution, "issue_id": QualityIssue, "comparison_id": Comparison, "decision_id": ReleaseDecision,
                 "credential_version_id": CredentialVersion, "case_id": TestCase, "other_version_id": BenchmarkVersion, "source_run_id": Run}
             for data in (request.path_params, dict(request.query_params), body, body.get("payload") if isinstance(body.get("payload"), dict) else {}):

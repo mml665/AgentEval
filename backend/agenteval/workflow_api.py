@@ -47,9 +47,19 @@ def install(router, settings, sessions, database, get, serialize, create_run):
         return create_run(RunCreate(**body.model_dump(include=set(RunCreate.model_fields))), tasks, "reuse:"+body.request_key, session)
 
     @router.get("/onboarding/requests/{request_key}")
-    def request_result(request_key: str, project_id: str, session=Depends(database)):
+    def request_result(request_key: str, request: Request, project_id: str | None = None, session=Depends(database)):
+        if not 16 <= len(request_key) <= 128:
+            raise HTTPException(422, detail={"code": "INVALID_REQUEST_KEY"})
+        if project_id is None:
+            principal = request.state.principal
+            if not principal.admin:
+                raise HTTPException(403, detail={"code": "PROJECT_SCOPE_REQUIRED"})
+            row = session.scalar(select(Run).join(OnboardingReceipt).where(OnboardingReceipt.request_key == request_key))
+            actor = (row.initiator or {}) if row else {}
+            owned = row is not None and actor.get("kind") == principal.kind and actor.get("id") == principal.id
+            # First-project recovery only needs a destination, without exposing any unscoped run data.
+            return {"found": owned, "run": {"id": row.id, "project_id": row.project_id} if owned else None}
         get(session, Project, project_id)
-        if not 16 <= len(request_key) <= 128: raise HTTPException(422, detail={"code": "INVALID_REQUEST_KEY"})
         guided = session.scalar(select(OnboardingReceipt).join(Run, Run.id == OnboardingReceipt.run_id).where(OnboardingReceipt.request_key == request_key, Run.project_id == project_id))
         reused = session.scalar(select(RequestDedup).where(RequestDedup.project_id == project_id, RequestDedup.key_hash == digest("reuse:"+request_key)))
         row = get(session, Run, (guided or reused).run_id) if guided or reused else None

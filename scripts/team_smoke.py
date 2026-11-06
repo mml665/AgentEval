@@ -83,6 +83,12 @@ def main():
                 rerun=post(writer,"onboarding/reuse",reuse)
                 assert post(writer,"onboarding/reuse",reuse)["id"]==rerun["id"]
                 assert writer.get(f"/api/v1/onboarding/requests/{request_key}",params={"project_id":a["id"]}).json()["run"]["id"]==rerun["id"]
+                selection_url = f"/api/v1/quality/scope-selection/{a['id']}"
+                pinned = writer.get(selection_url, params={"candidate_run_id": run["id"]}).json()["selection"]
+                assert pinned["candidate_run_id"] == run["id"] and pinned["candidate_batch_id"] == run["grading_batch_id"]
+                assert writer.get(selection_url, params={"candidate_run_id": run["id"], "candidate_batch_id": rerun["grading_batch_id"]}).status_code == 422
+                workbench = reader.get(f"/api/v1/quality/workbench/{a['id']}", params=pinned).json()
+                assert workbench["candidate"]["run_id"] == run["id"] and workbench["candidate"]["grading_batch_id"] == run["grading_batch_id"]
                 post(writer,"quality/baselines/"+a["id"],{"agent_id":agent["id"],"benchmark_version_id":bv["id"],"grading_batch_id":run["grading_batch_id"]})
                 assert writer.get("/api/v1/quality/baselines/"+a["id"]).json()["items"][0]["grading_batch_id"]==run["grading_batch_id"]
                 private={"mode":"reuse","request_key":request_key,"cases":'[{"password":"private-author-fixture"}]',"agent_version_id":av["id"],"benchmark_version_id":bv["id"],"profile_version_id":profile["id"]}

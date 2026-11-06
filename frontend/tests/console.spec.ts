@@ -68,7 +68,7 @@ test('login rejects invalid token, then completes real evaluation, evidence and 
   expect(errors).toEqual([]);
 });
 
-test('manual configuration publishes agent, benchmark, profile and runs from UI', async ({ page }) => {
+test('manual configuration publishes resources and creates a preflighted evaluation from the task list', async ({ page, request }) => {
   await login(page);
   await page.getByRole('button', { name: '新建项目', exact: true }).first().click();
   const modal = page.getByRole('dialog');
@@ -104,9 +104,34 @@ test('manual configuration publishes agent, benchmark, profile and runs from UI'
   await modal.getByRole('button', { name: '使用四粒度示例' }).click();
   await modal.getByRole('button', { name: '发布评分方案' }).click();
   await expect(modal).not.toBeVisible();
+  const projectId = await page.getByLabel('当前项目').inputValue();
+  const headers = { Authorization: `Bearer ${token}` };
+  async function post(path: string, data: unknown) {
+    const r = await request.post(`/api/v1/${path}`, { headers, data });
+    expect(r.ok(), await r.text()).toBeTruthy();
+    return r.json();
+  }
+  for (let i = 0; i < 12; i++) {
+    await post('profile-versions', { project_id: projectId, name: `其他方案 ${i}`, version: '1', evaluators: [{ instance_id: 'answer', id: 'exact_match' }] });
+    const agent = await post('agents', { project_id: projectId, name: `其他 Agent ${i}`, adapter_type: 'python' });
+    await post(`agents/${agent.id}/versions`, { version: '1', configuration: { plugin_id: 'example.order.v1' } });
+    const bm = await post('benchmarks', { project_id: projectId, name: `其他 Benchmark ${i}` });
+    await post(`benchmarks/${bm.id}/versions`, { version: '1', cases: [{ case_key: 'other', input: {}, assertions: { expected_output: 'other' } }] });
+  }
   await page.getByRole('link', { name: '评测任务', exact: false }).click();
   await page.getByRole('button', { name: '创建评测' }).click();
-  await modal.getByRole('button', { name: '开始评测' }).click();
+  await expect(page.getByLabel('复用评分方案').locator('option')).toHaveCount(14);
+  await page.getByLabel('复用 Agent 版本').selectOption({ label: '手动 Order Agent · v1.0' });
+  const benchmark = page.getByLabel('复用 Benchmark 版本');
+  const option = benchmark.getByRole('option', { name: /手动订单用例/ });
+  await expect(option).toHaveCount(1);
+  await benchmark.selectOption(await option.getAttribute('value') || '');
+  const scoring = page.getByLabel('复用评分方案');
+  await scoring.selectOption(await scoring.getByRole('option', { name: /手动四粒度评分/ }).getAttribute('value') || '');
+  await expect(page.getByRole('button', { name: '执行复用评测' })).toBeDisabled();
+  await page.getByRole('button', { name: '预检并核对配置' }).click();
+  await expect(page.getByRole('heading', { name: '提交前配置确认' })).toBeVisible();
+  await page.getByRole('button', { name: '执行复用评测' }).click();
   await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
   await expect(page.locator('.metric-card').filter({ hasText: '任务成功率' }).locator('strong')).toHaveText('100%', { timeout: 40000 });
   await expect(page.getByRole('heading', { name: '投递与执行保护' })).toBeVisible();
@@ -174,7 +199,7 @@ test('health, standalone component, trace timeline, export and pagination work t
   await expect(page.locator('.resource-card')).toHaveCount(10);
   const firstPage = await page.locator('.resource-card h2').allTextContents();
   await page.getByRole('button', { name: '下一页', exact: true }).click();
-  await expect(page.locator('.resource-card')).toHaveCount(4);
+  await expect(page.getByRole('heading', { name: 'Paged Agent 1', exact: true })).toBeVisible();
   const secondPage = await page.locator('.resource-card h2').allTextContents();
   expect(firstPage.filter(name => secondPage.includes(name))).toHaveLength(0);
   await page.screenshot({ path: '../.build/console-paging.png', fullPage: true });
@@ -228,7 +253,7 @@ test('guided evaluation diagnoses false success, tracks repair, verifies retest 
   await page.getByRole('checkbox', { name: /独立状态验证/ }).check();
   await page.getByLabel('独立环境适配器').selectOption('sqlite.refund.v1');
   await page.getByRole('button', { name: '下一步：准备测试用例' }).click();
-  await page.getByRole('button', { name: '退款状态示例' }).click();
+  await page.getByRole('button', { name: '填入退款演示用例' }).click();
   await page.getByRole('button', { name: '预检并核对配置' }).click();
   await expect(page.getByRole('heading', { name: '提交前配置确认' })).toBeVisible();
   await page.getByRole('button', { name: '执行评测并查看分析' }).click();
@@ -711,7 +736,28 @@ test('case table editing preserves nested JSON, rejects invalid imports atomical
   await login(page); await page.getByLabel('当前项目',{exact:true}).selectOption(project.id); await page.getByRole('link',{name:'Benchmark',exact:true}).click();
   await page.getByRole('button',{name:'导入新版本',exact:true}).click(); const modal=page.getByRole('dialog');
   await modal.getByLabel('版本号',{exact:true}).fill('1'); await modal.getByLabel('用例内容').fill(JSON.stringify([a,b]));
-  await modal.getByText(/表格预览与基础编辑/).click(); await modal.getByRole('button',{name:'编辑用例 1',exact:true}).click();
+  await modal.getByText(/表格预览与基础编辑/).click();
+  await modal.getByRole('button',{name:'编辑用例 1',exact:true}).click();
+  const raw = modal.getByLabel('用例内容');
+  const broken = JSON.stringify([a,b]).slice(0,-1);
+  await raw.fill(broken);
+  await expect(modal.getByRole('button',{name:'添加用例',exact:true})).toBeDisabled();
+  await expect(modal.getByRole('button',{name:'删除用例 1',exact:true})).toHaveCount(0);
+  await expect(modal.getByRole('button',{name:'应用单条修改',exact:true})).toHaveCount(0);
+  await expect(raw).toHaveValue(broken);
+  await raw.fill(JSON.stringify([a,b]));
+  await modal.getByRole('button',{name:'编辑用例 1',exact:true}).click();
+  await modal.locator('input[type=file]').setInputFiles({ name: 'replacement.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify([b,a])) });
+  await expect(raw).toHaveValue(JSON.stringify([b,a]));
+  await expect(modal.getByRole('button',{name:'应用单条修改',exact:true})).toHaveCount(0);
+  await raw.fill('');
+  await modal.getByRole('button',{name:'添加用例',exact:true}).click();
+  await expect(raw).toHaveValue(/case-1/);
+  await raw.fill(JSON.stringify([{...a,case_key:'case-2'}]));
+  await modal.getByRole('button',{name:'添加用例',exact:true}).click();
+  expect(JSON.parse(await raw.inputValue()).map((item: { case_key: string }) => item.case_key)).toEqual(['case-2','case-3']);
+  await raw.fill(JSON.stringify([a,b]));
+  await modal.getByRole('button',{name:'编辑用例 1',exact:true}).click();
   await modal.getByLabel('单条用例完整 JSON（保留嵌套结构）').fill(JSON.stringify({...a,assertions:{expected_output:'edited'}}));
   await modal.getByRole('button',{name:'应用单条修改',exact:true}).click();
   await modal.getByRole('button',{name:'添加用例',exact:true}).click(); await modal.getByRole('button',{name:'按行与字段预检',exact:true}).click();
@@ -726,6 +772,170 @@ test('case table editing preserves nested JSON, rejects invalid imports atomical
   await page.getByText('查看固定版本新增 / 删除 / 修改差异',{exact:true}).click();
   await page.getByLabel('数据集基线版本').selectOption(v1.id); await page.getByLabel('数据集候选版本').selectOption(v2.id);
   await page.getByRole('button',{name:'比较数据集版本',exact:true}).click();
-  await expect(page.locator('pre')).toContainText('"added"'); await expect(page.locator('pre')).toContainText('"modified"'); await expect(page.locator('pre')).toContainText('"removed"');
+  await expect(page.getByText('新增 1 条 · 删除 1 条 · 修改 1 条 · 未变更 0 条')).toBeVisible();
+  await page.getByText('修改用例 A', { exact: true }).click();
+  await expect(page.getByLabel('数据集版本差异').locator('pre').first()).toContainText('edited');
+  await expect(page.getByLabel('数据集版本差异').locator('pre').last()).toContainText('new');
   await page.screenshot({path:'../.build/workflow-case-diff.png',fullPage:true});
+});
+
+test('historical detail and tracking pin the selected run and batch across navigation', async ({ page, request }) => {
+  const headers = { Authorization: `Bearer ${token}` };
+  async function post(path: string, data?: unknown) {
+    const r = await request.post(`/api/v1/${path}`, { headers, data });
+    expect(r.ok(), await r.text()).toBeTruthy();
+    return r.json();
+  }
+  async function report(run: string, batch: string) {
+    const url = `/api/v1/evaluations/${run}/report?grading_batch_id=${batch}`;
+    return (await request.get(url, { headers })).json();
+  }
+  const f = await fixture(post, '历史固定证据复查');
+  const failing = await post('profile-versions', { project_id: f.project.id, name: 'Reject shipped', version: '1', evaluators: [{
+    instance_id: 'schema', id: 'json_schema', config: { schema: { type: 'object', required: ['status'], properties: { status: { const: 'cancelled' } } } },
+  }] });
+  const inputs = { agent_version_id: f.av.id, benchmark_version_id: f.bv.id };
+  const old = await post('evaluations', { ...inputs, profile_version_id: failing.id });
+  const newer = await post('evaluations', { ...inputs, profile_version_id: f.profile.id });
+  await expect.poll(async () => (await report(old.id, old.grading_batch_id)).success_rate).toBe(0);
+  await expect.poll(async () => (await report(newer.id, newer.grading_batch_id)).success_rate).toBe(1);
+  const oldSecond = await post(`evaluations/${old.id}/regrade`);
+  const newSecond = await post(`evaluations/${newer.id}/regrade`);
+  await expect.poll(async () => (await report(old.id, oldSecond.id)).grading_status).toBe('completed');
+  await expect.poll(async () => (await report(newer.id, newSecond.id)).grading_status).toBe('completed');
+  const scope = () => new URLSearchParams(new URL(page.url()).hash.split('?')[1]);
+  await page.goto(`/#/runs/${old.id}?project_id=${f.project.id}`);
+  await page.getByLabel('访问令牌', { exact: true }).fill(token);
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByLabel('评分批次', { exact: true })).toHaveValue(oldSecond.id);
+  await expect.poll(() => scope().get('candidate_run_id')).toBe(old.id);
+  await expect.poll(() => scope().get('candidate_batch_id')).toBe(oldSecond.id);
+  await page.getByLabel('评分批次', { exact: true }).selectOption(old.grading_batch_id);
+  await expect.poll(() => scope().get('grading_batch_id')).toBe(old.grading_batch_id);
+  await page.getByRole('button', { name: '跟踪本批次异常' }).click();
+  await expect(page.getByRole('heading', { name: 'Bad Case 管理' })).toBeVisible();
+  await expect.poll(() => scope().get('candidate_batch_id')).toBe(old.grading_batch_id);
+  expect(scope().get('candidate_run_id')).toBe(old.id);
+  const found = await (await request.get(`/api/v1/quality/issues?${scope()}`, { headers })).json();
+  expect(found.items.map((item: { batch_id: string }) => item.batch_id)).toEqual([old.grading_batch_id]);
+  await page.getByText('固定评分批次与显式基线', { exact: true }).click();
+  await expect(page.getByLabel('候选运行', { exact: true })).toHaveValue(old.id);
+  const batches = page.getByLabel('候选评分批次', { exact: true });
+  await expect(batches.locator('option')).toHaveCount(3);
+  await expect(batches.locator(`option[value="${newSecond.id}"]`)).toHaveCount(0);
+
+  const historyCalls: string[] = [];
+  const started = Date.now();
+  page.on('request', r => { if (/\/quality\/(runs|batches|scope-selection|scope-options)(\/|\?|$)/.test(r.url())) historyCalls.push(r.url()); });
+  await page.getByRole('link', { name: '质量工作台', exact: true }).click();
+  const source = page.getByRole('link', { name: '查看来源评测', exact: true });
+  await expect(source).toHaveAttribute('href', new RegExp(`${old.id}.*grading_batch_id=${old.grading_batch_id}`));
+  await page.getByRole('link', { name: '发布决策', exact: true }).click();
+  await expect(page.getByRole('heading', { name: '版本发布决策' })).toBeVisible();
+  await expect.poll(() => scope().get('candidate_run_id')).toBe(old.id);
+  expect(scope().get('candidate_batch_id')).toBe(old.grading_batch_id);
+  expect(historyCalls).toEqual([]);
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile('../.build/workflow-scope-navigation.json', JSON.stringify({ transitions: 2, history_requests: 0,
+    history_response_bytes: 0, elapsed_ms: Date.now() - started }, null, 2));
+});
+
+test('a restored pending draft can query a missing receipt and retry the identical request', async ({ page, request }) => {
+  const headers = { Authorization: `Bearer ${token}` };
+  async function post(path: string, data: unknown) {
+    const r = await request.post(`/api/v1/${path}`, { headers, data });
+    expect(r.ok(), await r.text()).toBeTruthy();
+    return r.json();
+  }
+  const f = await fixture(post, '恢复未提交请求复查');
+  await page.goto('/');
+  await page.getByRole('button', { name: '使用个人账号登录' }).click();
+  await page.getByLabel('用户名').fill('fixtureadmin');
+  await page.getByLabel('密码').fill('browser-admin-password-fixture-only');
+  await page.getByRole('button', { name: '登录团队工作台' }).click();
+  await page.getByLabel('当前项目').selectOption(f.project.id);
+  await page.goto(`/#/start?project_id=${f.project.id}&source_run_id=${f.run.id}`);
+  await expect(page.getByLabel('复用评分方案')).toHaveValue(f.profile.id);
+  await page.getByRole('button', { name: '保存我的草稿' }).click();
+  await expect(page.getByRole('status')).toContainText('草稿已保存');
+
+  const draftUrl = `/api/v1/onboarding/drafts/${f.project.id}`;
+  const saved = await (await page.request.get(draftUrl)).json();
+  const session = await (await page.request.get('/api/v1/auth/session')).json();
+  const remote = await page.request.post(draftUrl, { headers: { Origin: new URL(page.url()).origin, 'X-CSRF-Token': session.csrf_token },
+    data: { expected_revision: saved.revision, payload: { ...saved.payload, agent_version_id: f.av2.id } } });
+  expect(remote.ok(), await remote.text()).toBeTruthy();
+  await page.getByRole('button', { name: '保存我的草稿' }).click();
+  await page.getByRole('button', { name: '读取最新草稿，保留当前输入' }).click();
+  await expect(page.getByLabel('复用 Agent 版本')).toHaveValue(f.av.id);
+  await page.getByRole('button', { name: '保留当前配置' }).click();
+
+  await page.getByRole('button', { name: '预检并核对配置' }).click();
+  let original: unknown;
+  await page.route('**/api/v1/onboarding/reuse', async route => {
+    original = route.request().postDataJSON();
+    await route.abort('failed');
+  }, { times: 1 });
+  await page.getByRole('button', { name: '执行复用评测' }).click();
+  await expect(page.getByRole('heading', { name: '提交结果尚未确认' })).toBeVisible();
+  await page.reload();
+  await page.getByRole('button', { name: '恢复我的草稿' }).click();
+  await page.getByRole('button', { name: '查询原请求结果' }).click();
+  await expect(page.getByRole('alert')).toContainText('尚无已提交结果');
+  const retry = page.waitForRequest(r => r.url().endsWith('/api/v1/onboarding/reuse') && r.method() === 'POST');
+  await page.getByRole('button', { name: '按原请求重试' }).click();
+  expect((await retry).postDataJSON()).toEqual(original);
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  const list = await (await request.get(`/api/v1/evaluations?project_id=${f.project.id}`, { headers })).json();
+  expect(list.total).toBe(2);
+});
+
+test('first-project recovery can query and retry before a project ID exists', async ({ page }) => {
+  let committed = '';
+  await page.route('**/api/v1/projects?*', async route => {
+    if (route.request().method() === 'GET' && !committed) await route.fulfill({ json: { items: [], total: 0 } });
+    else await route.continue();
+  });
+  await login(page);
+  await expect(page.getByRole('heading', { name: /从一个项目开始/ })).toBeVisible();
+  await page.getByRole('link', { name: '三步开始评测' }).click();
+  await page.getByLabel('项目名称', { exact: true }).fill('首次项目提交恢复');
+  await expect(page.getByLabel('部署插件')).toHaveValue('');
+  await page.getByLabel('部署插件').selectOption('example.order.v1');
+  await page.getByRole('button', { name: '校验接入并继续' }).click();
+  await page.getByRole('button', { name: '下一步：准备测试用例' }).click();
+  await expect(page.getByLabel('测试用例', { exact: true })).toHaveValue('');
+  await page.getByRole('button', { name: '填入订单演示用例' }).click();
+  await page.getByRole('button', { name: '预检并核对配置' }).click();
+  await page.route('**/api/v1/onboarding/evaluations', route => route.fulfill({ status: 503, json: { code: 'FIXTURE_UNCOMMITTED' } }), { times: 1 });
+  await page.getByRole('button', { name: '执行评测并查看分析' }).click();
+  await expect(page.getByRole('button', { name: '返回修改配置' })).toBeEnabled();
+  await page.getByRole('button', { name: '查询原请求结果' }).click();
+  await expect(page.getByRole('alert')).toContainText('尚无已提交结果');
+  await page.route('**/api/v1/onboarding/evaluations', async route => {
+    const result = await route.fetch();
+    expect(result.ok(), await result.text()).toBeTruthy();
+    committed = (await result.json()).id;
+    await route.abort('failed');
+  }, { times: 1 });
+  await page.getByRole('button', { name: '按原请求重试' }).click();
+  await expect(page.getByRole('button', { name: '查询原请求结果' })).toBeEnabled();
+  await page.getByRole('button', { name: '查询原请求结果' }).click();
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  expect(new URL(page.url()).hash.split('?')[0]).toBe(`#/runs/${committed}`);
+});
+
+test('local calendar filters preserve UTC boundaries on a daylight saving transition', async ({ browser, baseURL }) => {
+  const context = await browser.newContext({ baseURL, timezoneId: 'America/New_York' });
+  try {
+    const page = await context.newPage();
+    await login(page);
+    await page.getByRole('link', { name: '评测任务', exact: true }).click();
+    await page.getByLabel('起始日期（America/New_York）').fill('2026-03-08');
+    await page.getByLabel('结束日期（America/New_York）').fill('2026-03-08');
+    const query = new URLSearchParams(new URL(page.url()).hash.split('?')[1]);
+    expect(query.get('created_after')).toBe('2026-03-08T05:00:00.000Z');
+    expect(query.get('created_before')).toBe('2026-03-09T03:59:59.999999Z');
+    await expect(page.getByLabel('结束日期（America/New_York）')).toHaveValue('2026-03-08');
+  } finally { await context.close(); }
 });

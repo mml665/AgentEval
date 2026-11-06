@@ -42,6 +42,7 @@ jobs:
             .build/team-b-*.png
             .build/protection-*.png
             .build/workflow-*.png
+            .build/workflow-scope-navigation.json
   test:
     runs-on: ubuntu-latest
     steps:
