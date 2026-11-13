@@ -20,6 +20,7 @@ MUTATING_EVENTS = {"developer_update", "scope_changed", "bulk_confirm", "bulk_ig
     "retest_started", "retest", "promoted_to_regression"}
 SCOPED_ROUTES = {
     "/quality/scope-options/{project_id}", "/quality/scope-selection/{project_id}",
+    "/quality/notifications/{project_id}", "/quality/trends/{project_id}", "/quality/ci-gate",
     "/workspace-versions/{project_id}",
     "/onboarding/preview", "/onboarding/reuse-preview", "/onboarding/reuse", "/onboarding/requests/{request_key}", "/onboarding/drafts/{project_id}",
     "/evaluations/{run_id}/reuse-config", "/benchmarks/{benchmark_id}/preview", "/benchmarks/{benchmark_id}/publish", "/benchmark-versions/{version_id}/diff", "/quality/baselines/{project_id}",

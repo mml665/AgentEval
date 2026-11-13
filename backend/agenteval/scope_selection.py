@@ -4,10 +4,10 @@ from typing import Literal
 from fastapi import Depends, HTTPException, Query
 from sqlalchemy import case, func, select
 
-from agenteval.db import Agent, AgentVersion, BaselineSetting, Benchmark, BenchmarkVersion, GradingBatch, Project, Run
+from agenteval.db import Agent, AgentVersion, BaselineSetting, Benchmark, BenchmarkVersion, GradingBatch, ProfileVersion, Project, Run
 
 
-OptionKind = Literal["agent", "version", "benchmark", "run", "batch"]
+OptionKind = Literal["agent", "version", "benchmark", "run", "batch", "profile"]
 
 
 def run_options(project_id):
@@ -27,10 +27,14 @@ def options(session, project_id, kind, agent_id=None, agent_version_id=None, ben
             columns = (AgentVersion.id, Agent.name, AgentVersion.version)
         elif kind == "benchmark":
             columns = (BenchmarkVersion.id, Benchmark.name, BenchmarkVersion.version)
+        elif kind == "profile":
+            columns = (ProfileVersion.id, ProfileVersion.name, ProfileVersion.version)
         else:
             columns = (Run.id, Agent.name, AgentVersion.version, Benchmark.name, BenchmarkVersion.version)
         query = (select(*columns).select_from(Run).join(AgentVersion).join(Agent).join(BenchmarkVersion, Run.benchmark_version_id == BenchmarkVersion.id)
             .join(Benchmark).where(Run.project_id == project_id))
+        if kind == "profile":
+            query = query.join(ProfileVersion, ProfileVersion.id == Run.profile_version_id)
         if agent_id: query = query.where(Agent.id == agent_id)
         if agent_version_id: query = query.where(Run.agent_version_id == agent_version_id)
         if benchmark_version_id: query = query.where(Run.benchmark_version_id == benchmark_version_id)

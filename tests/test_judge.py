@@ -115,6 +115,33 @@ def test_missing_judge_config_is_rejected_before_dispatch(client, setup_run):
         assert unconfigured.get("/api/v1/evaluations").json()["total"] == 0
 
 
+@pytest.mark.parametrize("mode,calls,estimated,reserved", [("normal", 2, 140, 0), ("unavailable", 1, 0, 4864)])
+def test_money_budget_reconciles_usage_and_keeps_uncertain_reservations(
+        client, setup_run, judge_server, mode, calls, estimated, reserved):
+    s = setup_run
+    profile = s["post"]("profile-versions", {"project_id": s["project"]["id"], "name": "Money", "version": "1",
+        "evaluators": [{"instance_id": "judge", "id": "llm_judge", "config": {"rubric": "Check correctness."}}]})
+    judge_server["mode"] = mode
+    config = Settings(database_url="sqlite:///" + client.app.state.engine.url.database, api_token=TOKEN,
+        judge_endpoint=judge_server["endpoint"], judge_model="fixture-model", judge_reserve_input_tokens=4096,
+        judge_input_micro_usd_per_million=1_000_000, judge_output_micro_usd_per_million=1_000_000,
+        judge_max_micro_usd=5000)
+    with TestClient(create_app(config), headers={"Authorization": f"Bearer {TOKEN}"}) as priced:
+        response = priced.post("/api/v1/evaluations", json={**s["body"], "profile_version_id": profile["id"]})
+        assert response.status_code == 202, response.text
+        run_id = response.json()["id"]
+        budget = priced.get(f"/api/v1/evaluations/{run_id}/judge-budget").json()
+        assert len(judge_server["requests"]) == budget["reserved_calls"] == calls
+        assert budget["cost"]["estimated_micro_usd"] == estimated
+        assert budget["cost"]["reserved_micro_usd"] == reserved
+        assert budget["cost"]["remaining_micro_usd"] == 5000 - estimated - reserved
+        assert budget["cost"]["pricing"]["max_micro_usd"] == 5000
+        if mode == "unavailable":
+            scores = priced.get(f"/api/v1/evaluations/{run_id}/results").json()["items"]
+            assert all(row["result"]["explanation"] == "JUDGE_RUN_AMOUNT_BUDGET_EXHAUSTED" for row in scores)
+    assert client.get(f"/api/v1/evaluations/{run_id}/judge-budget").json()["cost"] == budget["cost"]
+
+
 async def test_run_budget_survives_worker_environment_change(client, setup_run, judge_server):
     from agenteval.durable import Coordinator
     s = setup_run

@@ -334,6 +334,8 @@ class Coordinator:
             run = session.get(Run, item.run_id)
             if run.status not in ("completed", "cancelled", "failed"):
                 run.status = "cancelled" if run.cancel_requested else "completed"
+            session.add(AuditEvent(run_id=run.id, action="GRADING_BATCH_COMPLETED",
+                detail={"grading_batch_id": batch.id, "revision": batch.revision, "run_status": run.status}))
             from agenteval.issue_scopes import ingestion_mode, collect_anomalies
             if ingestion_mode(session, run.project_id) == "automatic":
                 session.flush()

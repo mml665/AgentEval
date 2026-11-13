@@ -1,0 +1,81 @@
+name: Agent release gate
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        required: true
+        type: string
+      agent_version_id:
+        required: true
+        type: string
+      benchmark_version_id:
+        required: true
+        type: string
+      profile_version_id:
+        required: true
+        type: string
+      baseline_batch_id:
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      project_id:
+        required: true
+        type: string
+      agent_version_id:
+        required: true
+        type: string
+      benchmark_version_id:
+        required: true
+        type: string
+      profile_version_id:
+        required: true
+        type: string
+      baseline_batch_id:
+        required: true
+        type: string
+    secrets:
+      AGENTEVAL_CI_TOKEN:
+        required: true
+    outputs:
+      status:
+        value: ${{ jobs.gate.outputs.status }}
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      status: ${{ steps.gate.outputs.status }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install httpx==0.28.1
+      - id: gate
+        env:
+          AGENTEVAL_URL: ${{ vars.AGENTEVAL_URL }}
+          AGENTEVAL_CI_TOKEN: ${{ secrets.AGENTEVAL_CI_TOKEN }}
+          PROJECT_ID: ${{ inputs.project_id }}
+          AGENT_VERSION_ID: ${{ inputs.agent_version_id }}
+          BENCHMARK_VERSION_ID: ${{ inputs.benchmark_version_id }}
+          PROFILE_VERSION_ID: ${{ inputs.profile_version_id }}
+          BASELINE_BATCH_ID: ${{ inputs.baseline_batch_id }}
+          REQUEST_NAMESPACE: ci:${{ github.repository_id }}:${{ github.run_id }}
+        run: |
+          REQUEST_KEY=$(printf '%s\n' "$REQUEST_NAMESPACE" "$PROJECT_ID" "$AGENT_VERSION_ID" \
+            "$BENCHMARK_VERSION_ID" "$PROFILE_VERSION_ID" "$BASELINE_BATCH_ID" | sha256sum | cut -d ' ' -f 1)
+          python -m scripts.ci_gate --project-id "$PROJECT_ID" \
+            --agent-version-id "$AGENT_VERSION_ID" --benchmark-version-id "$BENCHMARK_VERSION_ID" \
+            --profile-version-id "$PROFILE_VERSION_ID" --baseline-batch-id "$BASELINE_BATCH_ID" \
+            --request-key "$REQUEST_KEY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: agenteval-gate-${{ inputs.agent_version_id }}-${{ inputs.baseline_batch_id }}-${{ github.run_attempt }}
+          path: agenteval-gate.json

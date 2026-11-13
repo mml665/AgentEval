@@ -16,11 +16,16 @@ def records(session, model, **filters):
 
 def snapshot(session, run, settings=None):
     from agenteval.config import Settings
+    from agenteval.judge_cost import policy
     settings = settings or Settings()
     agent_version = session.get(AgentVersion, run.agent_version_id)
     agent = session.get(Agent, agent_version.agent_id)
     benchmark = session.get(BenchmarkVersion, run.benchmark_version_id)
     profile = session.get(ProfileVersion, run.profile_version_id)
+    judge = {"endpoint": settings.judge_endpoint, "model": settings.judge_model,
+             "prompt_version": "judge-1.0", "max_calls": settings.judge_max_calls}
+    if any(spec["id"] == "llm_judge" for spec in profile.definition["evaluators"]) and (pricing := policy(settings)):
+        judge["pricing"] = pricing
     return {
         "schema_version": "0.1", "engine_version": __version__,
         "agent": {"version_id": agent_version.id, "adapter_type": agent.adapter_type,
@@ -30,7 +35,7 @@ def snapshot(session, run, settings=None):
         "profile": profile.definition, "profile_hash": profile.content_hash,
         "environment": {"python": sys.version.split()[0], "platform": platform.system()},
         "reproducibility": "limited", "execution_mode": settings.execution_mode,
-        "judge": {"endpoint": settings.judge_endpoint, "model": settings.judge_model, "prompt_version": "judge-1.0", "max_calls": settings.judge_max_calls},
+        "judge": judge,
     }
 
 

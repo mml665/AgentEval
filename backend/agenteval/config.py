@@ -27,6 +27,10 @@ class Settings:
     judge_model: str = field(default_factory=lambda: os.getenv("AGENTEVAL_JUDGE_MODEL", ""))
     judge_api_key: str = field(default_factory=lambda: os.getenv("AGENTEVAL_JUDGE_API_KEY", ""), repr=False)
     judge_max_calls: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_MAX_CALLS", "100")))
+    judge_input_micro_usd_per_million: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_INPUT_MICRO_USD_PER_MILLION", "-1")))
+    judge_output_micro_usd_per_million: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_OUTPUT_MICRO_USD_PER_MILLION", "-1")))
+    judge_max_micro_usd: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_MAX_MICRO_USD", "0")))
+    judge_reserve_input_tokens: int = field(default_factory=lambda: int(os.getenv("AGENTEVAL_JUDGE_RESERVE_INPUT_TOKENS", "65536")))
     environment_root: str = field(default_factory=lambda: os.getenv("AGENTEVAL_ENVIRONMENT_ROOT", "./data/environments"))
 
     def __post_init__(self):
@@ -48,6 +52,12 @@ class Settings:
             endpoint = urlsplit(self.judge_endpoint)
             if endpoint.scheme not in ("http", "https") or not endpoint.hostname or endpoint.username or endpoint.password or endpoint.query or endpoint.fragment:
                 raise ValueError("Judge endpoint must be HTTP(S), without inline credentials, query or fragment")
+        rates = (self.judge_input_micro_usd_per_million, self.judge_output_micro_usd_per_million)
+        priced = all(0 <= rate <= 10**12 for rate in rates)
+        if ((not priced and rates != (-1, -1)) or not 0 <= self.judge_max_micro_usd <= 10**12
+                or not 1 <= self.judge_reserve_input_tokens <= 1_000_000
+                or self.judge_max_micro_usd and (not priced or not any(rates))):
+            raise ValueError("Invalid Judge prices, amount limit or input reservation")
     http_allowlist: tuple[str, ...] = field(default_factory=lambda: tuple(
         x.strip().lower() for x in os.getenv(
             "AGENTEVAL_HTTP_ALLOWLIST", "127.0.0.1:9001,localhost:9001").split(",") if x.strip()))

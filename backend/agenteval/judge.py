@@ -7,8 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy import select, func
 
 from agenteval.contracts import canonical, digest, pointer
-from agenteval.db import GradingBatch, JudgeCall, JudgeBudget, WorkItem, TraceSpan
+from agenteval.db import GradingBatch, JudgeCall, JudgeBudget, Run, WorkItem, TraceSpan
 from agenteval.evaluators import result
+from agenteval.judge_cost import COST_KEY, MAX_OUTPUT_TOKENS, charge, estimate, ledger
 
 PROMPT_VERSION = "judge-1.0"
 SYSTEM = """You are an evaluation judge. Grade only against the supplied rubric and reference.
@@ -43,6 +44,10 @@ def judge(spec, case, response, settings, coordinator, work_id, owner, epoch, ba
     content = canonical(payload)
     if len(content.encode()) > 48000:
         return result(spec, "missing_evidence", explanation="Judge input exceeds 48 KB; evidence was not silently truncated")
+    body = {"model": settings.judge_model, "temperature": 0, "max_tokens": MAX_OUTPUT_TOKENS,
+            "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}],
+            "response_format": {"type": "json_schema", "json_schema": {
+                "name": "agent_judgment", "strict": True, "schema": Decision.model_json_schema()}}}
     with coordinator.sessions() as session:
         previous = list(session.scalars(select(JudgeCall).filter_by(batch_id=batch_id, execution_id=execution_id, instance_id=spec.instance_id).order_by(JudgeCall.attempt_index)))
         cached = next((c.result for c in reversed(previous) if c.status == "completed" and c.result and
@@ -62,19 +67,26 @@ def judge(spec, case, response, settings, coordinator, work_id, owner, epoch, ba
             used = session.scalar(select(func.count()).select_from(JudgeCall).join(GradingBatch, JudgeCall.batch_id == GradingBatch.id).where(GradingBatch.run_id == run_id))
             if used >= budget.max_calls:
                 return result(spec, "evaluator_error", explanation="JUDGE_RUN_BUDGET_EXHAUSTED")
+            pricing = session.get(Run, run_id).manifest.get("judge", {}).get("pricing")
+            reserved = None
+            if pricing:
+                if len(canonical(body).encode()) > pricing["reserve_input_tokens"] and pricing["max_micro_usd"] is not None:
+                    return result(spec, "evaluator_error", explanation="JUDGE_INPUT_RESERVATION_EXCEEDED")
+                reserved = estimate(pricing, pricing["reserve_input_tokens"], pricing["reserve_output_tokens"])
+                if pricing["max_micro_usd"] is not None:
+                    remaining = ledger(session, run_id, pricing)["remaining_micro_usd"]
+                    if reserved > remaining or remaining == 0:
+                        return result(spec, "evaluator_error", explanation="JUDGE_RUN_AMOUNT_BUDGET_EXHAUSTED")
             call = JudgeCall(batch_id=batch_id, execution_id=execution_id, instance_id=spec.instance_id,
                              attempt_index=index, status="started", model=settings.judge_model,
-                             prompt_version=PROMPT_VERSION, input_hash=digest(payload))
+                             prompt_version=PROMPT_VERSION, input_hash=digest(payload),
+                             usage={COST_KEY: charge(pricing, reserved, None)} if pricing else None)
             session.add(call)
             session.flush()
             call_id = call.id
         value, usage, response_hash, retry = None, None, None, False
         try:
             headers = {"Authorization": f"Bearer {settings.judge_api_key}"} if settings.judge_api_key else {}
-            body = {"model": settings.judge_model, "temperature": 0, "max_tokens": 768,
-                    "messages": [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}],
-                    "response_format": {"type": "json_schema", "json_schema": {
-                        "name": "agent_judgment", "strict": True, "schema": Decision.model_json_schema()}}}
             from agenteval.tracing import Recorder, event
             recorder = Recorder()
             with coordinator.sessions() as session:
@@ -118,7 +130,10 @@ def judge(spec, case, response, settings, coordinator, work_id, owner, epoch, ba
         with coordinator.locked(coordinator.project(work_id)) as session:
             call = session.get(JudgeCall, call_id)
             call.status, call.result = "completed", value
-            call.usage, call.response_hash = usage if isinstance(usage, dict) else None, response_hash
+            provider_usage = {key: value for key, value in usage.items() if key != COST_KEY} if isinstance(usage, dict) else {}
+            if pricing:
+                provider_usage[COST_KEY] = charge(pricing, reserved, usage)
+            call.usage, call.response_hash = provider_usage or None, response_hash
             if 'recorder' in locals() and carrier:
                 from agenteval.tracing import persist_trace
                 persist_trace(session, execution_id, recorder.records())

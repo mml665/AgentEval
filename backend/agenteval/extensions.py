@@ -79,12 +79,14 @@ def install(router, settings, sessions, database, get, serialize, create_run, ru
 
     @router.get("/evaluations/{run_id}/judge-budget")
     def judge_budget(run_id: str, session=Depends(database)):
-        get(session, Run, run_id)
+        from agenteval.judge_cost import ledger
+        run = get(session, Run, run_id)
         budget = session.scalar(select(JudgeBudget).filter_by(run_id=run_id))
         used = session.scalar(select(func.count()).select_from(JudgeCall).join(GradingBatch, JudgeCall.batch_id == GradingBatch.id).where(GradingBatch.run_id == run_id))
         return {"max_calls": budget.max_calls if budget else None, "reserved_calls": used,
                 "remaining_calls": max(0, budget.max_calls - used) if budget else None,
-                "policy_source": budget.policy_source if budget else "legacy_not_frozen"}
+                "policy_source": budget.policy_source if budget else "legacy_not_frozen",
+                "cost": ledger(session, run_id, run.manifest.get("judge", {}).get("pricing"))}
 
     @router.get("/executions/{execution_id}/trace")
     def execution_trace(execution_id: str, session=Depends(database)):

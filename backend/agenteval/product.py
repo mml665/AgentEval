@@ -1,6 +1,7 @@
 """Quality workbench, guided evaluation, issue lifecycle and frozen release reviews."""
 from copy import deepcopy
 import json
+from types import SimpleNamespace
 
 import httpx
 from fastapi import BackgroundTasks, Depends, HTTPException, Query
@@ -17,7 +18,7 @@ from agenteval.db import (Agent, AgentVersion, Benchmark, BenchmarkVersion, Comp
 from agenteval.evaluators import metadata, validate_case
 from agenteval.product_contracts import (ConnectionCheck, CreateRelease, GuidedRun, ImportIssues, IssueRetest, IssueUpdate, StartRetest)
 from agenteval.quality import case_identity, release_snapshot
-from agenteval.service import report
+from agenteval.service import compare, report
 from agenteval.issue_scopes import INACTIVE, collect_anomalies, applicable_records, scope_for
 from agenteval.scope_api import comparison_query, resolve_scope, scoped_issues
 
@@ -282,6 +283,41 @@ def install(router, settings, database, get, serialize, create_run, runner):
             value = serialize(version)
         return value
 
+    def evaluate_release(session, comparison, baseline_batch, baseline_run, candidate_batch, run, note):
+        candidate_version = get(session, AgentVersion, run.agent_version_id)
+        baseline_version = get(session, AgentVersion, baseline_run.agent_version_id)
+        applicable = applicable_records(session, run.project_id, candidate_version.agent_id, candidate_version.id, run.benchmark_version_id)
+        blockers = [{"id": i.id, "revision": i.revision, "title": i.title, "status": i.status,
+                     "issue_scope": jsonable_encoder(serialize(scope))}
+                    for i, scope in applicable if i.kind == "issue" and i.severity == "blocking" and i.status not in INACTIVE]
+        newer = session.scalar(select(GradingBatch.id).where(
+            ((GradingBatch.run_id == run.id) & (GradingBatch.revision > candidate_batch.revision))
+            | ((GradingBatch.run_id == baseline_run.id) & (GradingBatch.revision > baseline_batch.revision))).limit(1))
+        current = all(b.grading_manifest.get("engine_version") == __version__ for b in (baseline_batch, candidate_batch))
+        return release_snapshot(comparison, blockers, bool(newer), note, current,
+            baseline_version.agent_id == candidate_version.agent_id, baseline_run.benchmark_version_id == run.benchmark_version_id)
+
+    @router.get("/quality/ci-gate")
+    def ci_gate(project_id: str, baseline_batch_id: str, candidate_batch_id: str, session=Depends(database)):
+        for batch_id in (baseline_batch_id, candidate_batch_id):
+            if get(session, Run, get(session, GradingBatch, batch_id).run_id).project_id != project_id:
+                raise HTTPException(404, detail={"code": "BATCH_NOT_IN_PROJECT"})
+        session.rollback()
+        with runner.coordinator.locked(project_id) as locked:
+            baseline_batch, baseline_run = settled(locked, baseline_batch_id)
+            candidate_batch, run = settled(locked, candidate_batch_id)
+            if baseline_run.id == run.id:
+                raise HTTPException(409, detail={"code": "DISTINCT_RUNS_REQUIRED"})
+            report = compare(locked, baseline_batch, candidate_batch, "strict")
+            decision = evaluate_release(locked, SimpleNamespace(report=report, id=None),
+                baseline_batch, baseline_run, candidate_batch, run, "")
+            return {key: decision[key] for key in ("policy_version", "status", "reasons", "evidence_complete")} | {
+                "project_id": project_id, "baseline_batch_id": baseline_batch_id, "candidate_batch_id": candidate_batch_id,
+                "baseline_run_id": baseline_run.id, "candidate_run_id": run.id,
+                "blocking_issue_ids": [issue["id"] for issue in decision["blocking_issues"]],
+                "success_rate_delta": report["success_rate_delta"], "gate": report["gate"],
+                "incompatible_fields": report["differences"]}
+
     @router.post("/release-decisions", status_code=201)
     def create_release(body: CreateRelease, session=Depends(database)):
         comparison = get(session, Comparison, body.comparison_id)
@@ -292,15 +328,9 @@ def install(router, settings, database, get, serialize, create_run, runner):
             comparison = get(locked, Comparison, body.comparison_id)
             candidate_batch, run = settled(locked, comparison.report["candidate_batch_id"])
             candidate_version = get(locked, AgentVersion, run.agent_version_id)
-            applicable = applicable_records(locked, project_id, candidate_version.agent_id, candidate_version.id, run.benchmark_version_id)
-            blockers = [{"id": i.id, "revision": i.revision, "title": i.title, "status": i.status, "issue_scope": jsonable_encoder(serialize(scope))}
-                for i, scope in applicable if i.kind == "issue" and i.severity == "blocking" and i.status not in INACTIVE]
-            newer = locked.scalar(select(func.count()).select_from(GradingBatch).where(GradingBatch.run_id == run.id, GradingBatch.revision > candidate_batch.revision)) > 0
             baseline_batch = get(locked, GradingBatch, comparison.report["baseline_batch_id"])
-            current = all(b.grading_manifest.get("engine_version") == __version__ for b in (baseline_batch, candidate_batch))
             baseline_run = get(locked, Run, baseline_batch.run_id)
-            same_agent = get(locked, AgentVersion, baseline_run.agent_version_id).agent_id == candidate_version.agent_id
-            value = release_snapshot(comparison, blockers, newer, body.note, current, same_agent, baseline_run.benchmark_version_id == run.benchmark_version_id)
+            value = evaluate_release(locked, comparison, baseline_batch, baseline_run, candidate_batch, run, body.note)
             value["evaluation_scope"] = {"agent_id": candidate_version.agent_id, "candidate_version_id": candidate_version.id,
                 "baseline_version_id": baseline_run.agent_version_id, "benchmark_version_id": run.benchmark_version_id,
                 "benchmark_id": get(locked, BenchmarkVersion, run.benchmark_version_id).benchmark_id}

@@ -1034,3 +1034,38 @@ test('core workflows pass accessibility scans and support keyboard navigation', 
   const { writeFile } = await import('node:fs/promises');
   await writeFile('../.build/accessibility-checks.json', JSON.stringify(scanned, null, 2));
 });
+
+test('notifications and scoped trends work in light and system themes', async ({ page, request }) => {
+  const f = await fixture(async (path, data) => {
+    const result = await request.post(`/api/v1/${path}`, { headers: { Authorization: `Bearer ${token}` }, data });
+    expect(result.ok(), await result.text()).toBeTruthy();
+    return result.json();
+  }, '趋势与通知项目');
+  await page.emulateMedia({ colorScheme: 'light' });
+  await page.goto(`/#/notifications?project_id=${f.project.id}`);
+  await page.getByLabel('主题', { exact: true }).selectOption('system');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await page.getByLabel('访问令牌').fill(token);
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByRole('heading', { name: '站内通知' })).toBeVisible();
+  const notification = page.getByRole('row').filter({ hasText: '第 1 批评分完成' });
+  await expect(notification).toContainText('未读');
+  await page.getByRole('button', { name: '全部标为已读' }).click();
+  await expect(notification.getByText('已读', { exact: true })).toBeVisible();
+  await expect(notification.getByRole('link')).toHaveAttribute('href', new RegExp(f.run.grading_batch_id));
+  const scan = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
+  expect(scan.violations.map(rule => ({ id: rule.id, nodes: rule.nodes.map(node => node.target) }))).toEqual([]);
+  await page.getByRole('navigation').getByRole('link', { name: '质量趋势' }).click();
+  await page.getByLabel('Agent', { exact: true }).selectOption(f.agent.id);
+  await page.getByLabel('Agent 版本', { exact: true }).selectOption(f.av.id);
+  await page.getByLabel('Benchmark 版本', { exact: true }).selectOption(f.bv.id);
+  await page.getByLabel('评分方案版本', { exact: true }).selectOption(f.profile.id);
+  await expect(page.getByRole('heading', { name: '每日试验结果' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: '100%', exact: true })).toHaveCount(2);
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await page.getByLabel('主题', { exact: true }).selectOption('light');
+  await page.reload();
+  await expect(page.getByLabel('主题', { exact: true })).toHaveValue('light');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+});

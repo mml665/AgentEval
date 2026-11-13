@@ -145,6 +145,30 @@ def test_machine_scope_expiry_revocation_and_no_digest_in_api(team):
     c.close()
 
 
+def test_automation_apis_enforce_project_scope_for_people_and_machines(team):
+    t = team
+    project = t["a"]["id"]
+    a = resources(t, t["a"])
+    b = resources(t, t["b"])
+    read = t["reader"]["client"]
+    outside = t["outsider"]["client"]
+    assert read.get(f"/api/v1/quality/notifications/{project}").json()["total"] == 2
+    assert outside.get(f"/api/v1/quality/notifications/{project}").status_code == 404
+    assert read.get(f"/api/v1/quality/trends/{project}", params=a["body"]).status_code == 200
+    assert read.get(f"/api/v1/quality/trends/{project}", params=b["body"]).status_code == 404
+    issued = t["post"]("team/machines", {"name": "CI", "project_ids": [project],
+        "permission": "evaluate", "expires_in_seconds": 600})
+    with TestClient(t["app"], headers={"Authorization": "Bearer " + issued["token"]}) as machine:
+        candidate = machine.post("/api/v1/onboarding/reuse", json={**a["body"], "project_id": project,
+            "request_key": "machine-gate-project-a"})
+        assert candidate.status_code == 202
+        params = {"project_id": project, "baseline_batch_id": a["run"]["grading_batch_id"],
+                  "candidate_batch_id": candidate.json()["grading_batch_id"]}
+        assert machine.get("/api/v1/quality/ci-gate", params=params).status_code == 200
+        params["baseline_batch_id"] = b["run"]["grading_batch_id"]
+        assert machine.get("/api/v1/quality/ci-gate", params=params).status_code == 404
+
+
 def test_session_expiry_membership_change_disable_and_password_reset_are_live(team):
     t = team; c = t["developer"]["client"]; user_id = t["developer"]["user"]["id"]
     t["post"]("team/members/" + t["a"]["id"], {"user_id": user_id, "role": "viewer"})

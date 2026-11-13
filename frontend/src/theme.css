@@ -1,0 +1,83 @@
+.theme-select { display: flex; align-items: center; gap: 9px; color: var(--muted); }
+.theme-select select { min-width: 0; padding: 6px 8px; }
+.sidebar-bottom .theme-select { margin: 8px 0; }
+.login-brand .theme-select { margin-left: auto; font-size: 12px; }
+.trend-results { max-height: 32rem; }
+.trend-results th { position: sticky; top: 0; }
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f2f5f9;
+  --panel: #fff;
+  --line: #c6d2de;
+  --muted: #495d72;
+  --mint: #076752;
+  --red: #a12c46;
+  --amber: #795018;
+  --soft: #eaf0f6;
+  --control: #f8fafc;
+  --positive: #e3f3ed;
+  --negative: #f9e9ed;
+  --attention: #fcf0d9;
+  color: #172839;
+  background: var(--bg);
+}
+
+[data-theme="light"] :is(.sidebar, .topbar, .modal, .modal-header, .login-card, .metric-card) { background: var(--panel); border-color: var(--line); }
+[data-theme="light"] .login-page { background: radial-gradient(ellipse at 16% 47%, #e1f2ec, transparent 55%), var(--bg); }
+[data-theme="light"] :is(.search-input, .project-picker select, input, textarea, select, .version-item, .span-detail, .span-row, .json-code) {
+  background: var(--control); color: #213548; border-color: var(--line);
+}
+[data-theme="light"] :is(input, textarea)::placeholder { color: var(--muted); }
+[data-theme="light"] .search-input input { background: transparent; }
+[data-theme="light"] :is(.panel, .resource-card, .profile-card, .welcome-steps > div, .score-evidence, .protocol-list > div,
+  .guided-steps li, .goal-options > label, .trace-tree, .case-change, .outcome-strip, .workspace-footer, .login-version,
+  .sidebar-bottom, .modal-footer, .span-row, th, td, .priority-list > a, .version-item) { border-color: var(--line); }
+[data-theme="light"] :is(.button.secondary, .auth-switch, .badge, .tag, .count-pill, .engine-card, .batch-strip, th,
+  .context-note, .callout.subtle, .case-change, .skip-content, .empty-icon, .span-track) {
+  background: var(--soft); color: #314d65; border-color: var(--line);
+}
+[data-theme="light"] :is(.nav-item:hover, .icon-button:hover, .button.secondary:hover:not(:disabled), .button.ghost:hover, tbody tr:hover) {
+  background: #dbe7f1; color: #203950;
+}
+[data-theme="light"] :is(.nav-item.active, .nav-count, .avatar, .logo-mark, .resource-icon, .callout, .progress-banner,
+  .guided-steps li[aria-current="step"], .login-flow-item > span, .span-row:hover, .span-row.selected, .version-button:hover) {
+  background: var(--positive); color: var(--mint); border-color: #9fbfb3;
+}
+[data-theme="light"] :is(.status-passed, .status-completed, .status-scored, .status-ready) {
+  background: var(--positive); color: var(--mint); border-color: #9fbfb3;
+}
+[data-theme="light"] :is(.status-failed, .status-agent_failed, .status-timed_out, .error-box, .gate-failed .gate-icon) {
+  background: var(--negative); color: var(--red); border-color: #dfb5c2;
+}
+[data-theme="light"] :is(.status-running, .status-evaluating) { background: #e2edfc; color: #254d80; border-color: #adc4e3; }
+[data-theme="light"] :is(.tag.amber, .status-pending, .status-cancelling, .status-queued, .status-unknown, .status-inconclusive,
+  .status-missing_evidence, .status-outcome_unknown, .status-blocked, .gate-icon) {
+  background: var(--attention); color: var(--amber); border-color: #d4b887;
+}
+[data-theme="light"] :is(.status-evaluator_error, .status-infrastructure_failed, .resource-icon.purple) {
+  background: #eee7f7; color: #644183; border-color: #c4afd7;
+}
+[data-theme="light"] .gate-banner { background: var(--attention); color: #36260f; border-color: #d4b887; }
+[data-theme="light"] .gate-failed { background: var(--negative); color: #4f2332; border-color: #dfb5c2; }
+[data-theme="light"] .gate-passed { background: var(--positive); color: #143e32; border-color: #9fbfb3; }
+[data-theme="light"] :is(.button.primary, .button.primary:hover:not(:disabled)) { color: #fff; background: #076752; }
+[data-theme="light"] .button.primary:hover:not(:disabled) { background: #07503f; }
+[data-theme="light"] :is(.nav-item, .sidebar-caption, .sidebar-signout, .sidebar-signout small, .brand strong span,
+  .engine-card small, .breadcrumbs, .icon-button, .project-context, .project-description, .panel-heading p,
+  .empty-state p, .metric-top, .metric-card small, .page-heading p, .workspace-footer, .view-protection-note,
+  .welcome p, .secondary-line, .table-secondary, .form-note, .form-description, .field > span, .check-list,
+  .protocol-list dt, .protocol-list dd, .muted, .form-body small, .span-name small, .score-evidence p,
+  .pager, .login-version, .login-card > p, .login-story > p, .login-security, .login-footer, .login-flow-item small,
+  .login-note, .login-brand strong span, .goal-options small, .guided-steps li, .chart-label, .chart-value,
+  .component-schema, .outcome-strip, .compare-number small, .regression-facts, .panel-footnote, .evidence-meta) {
+  color: var(--muted);
+}
+[data-theme="light"] :is(.page-heading h1, .breadcrumbs strong, .brand strong, .metric-card strong, .panel-heading h2,
+  .empty-state h3, .login-card h2, .welcome h1, .login-story h1, .score-evidence strong, .span-event strong,
+  .compare-number strong, .table-link, .case-change h3) { color: #172839; }
+[data-theme="light"] :is(.text-button, .table-link:hover, .login-story h1 span, .eyebrow, .nav-item.active,
+  .guided-steps li[aria-current="step"], .resource-icon, .logo-mark, .version-button, .button.ghost) { color: var(--mint); }
+[data-theme="light"] .resource-icon.purple { color: #644183; }
+[data-theme="light"] .table-link { text-decoration: underline; text-underline-offset: .15em; }
+[data-theme="light"] :focus-visible { outline-color: #075e50; }

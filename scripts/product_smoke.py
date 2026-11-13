@@ -55,6 +55,16 @@ def main():
             assert facts["items"][0]["rule"] == "state_assertion" and facts["items"][0]["verdict"] == "failed"
             assert client.get("/api/v1/quality/issues", params={"project_id": value["project_id"], **params}).json()["total"] == 0
             assert post("release-decisions", {"comparison_id": summary["comparison"]["id"]})["status"] == "ready"
+            gate = client.get("/api/v1/quality/ci-gate", params={"project_id": value["project_id"],
+                "baseline_batch_id": baseline["grading_batches"][0]["id"],
+                "candidate_batch_id": fixed["grading_batches"][0]["id"]}).raise_for_status().json()
+            assert gate["status"] == "ready" and not gate["blocking_issue_ids"]
+            notifications = client.get(f"/api/v1/quality/notifications/{value['project_id']}").raise_for_status().json()
+            assert {"issue", "task"} == {item["kind"] for item in notifications["items"]}
+            trend = client.get(f"/api/v1/quality/trends/{value['project_id']}", params={
+                key: fixed[key] for key in ("agent_version_id", "benchmark_version_id", "profile_version_id")
+            }).raise_for_status().json()
+            assert sum(day["passed"] for day in trend["series"]) > 0
             assert client.get(f"/api/v1/quality/project-overview/{value['project_id']}").json()["open_issues"] == 1
             for state, decision_id in value["decisions"].items():
                 response = client.get(f"/api/v1/release-decisions/{decision_id}/export")

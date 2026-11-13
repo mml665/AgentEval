@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState, type ReactNode, type FormEvent } from 'react';
 import { createAPI, type API } from './api';
 import { ErrorBox, Logo } from './ui';
+import { ThemeSelect } from './Theme';
 
 export interface Identity { kind: string; id: string | null; display_name: string; is_admin: boolean; project_roles: Record<string, string>; csrf_token: string; session_id: string | null; legacy: boolean }
 export interface AuthOptions { mode: string; legacy_enabled: boolean; initialized: boolean }
@@ -21,7 +22,7 @@ export function Authentication({ options, legacy, connected }: { options: AuthOp
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   if (!personal && options.legacy_enabled) return <>{legacy}<button className="button auth-switch" onClick={() => setPersonal(true)}>使用个人账号登录</button></>;
-  return <div className="login-page"><div className="login-brand"><Logo/><strong>AgentEval</strong></div><main className="personal-login"><section className="login-card"><h1>团队账号登录</h1><p>会话由服务端管理，可过期、撤销和安全退出。</p><form onSubmit={submit}><label className="field"><span>用户名</span><input autoComplete="username" required maxLength={80} value={username} onChange={e => setUsername(e.target.value)}/></label><label className="field"><span>密码</span><input type="password" autoComplete="current-password" required maxLength={256} value={password} onChange={e => setPassword(e.target.value)}/></label><ErrorBox message={error}/><button className="button primary" disabled={busy}>{busy ? '正在验证…' : '登录团队工作台'}</button></form>{!options.initialized && <p>首位管理员需在部署端执行 init-admin 初始化；此处不提供公开注册。</p>}{options.legacy_enabled && <button className="button secondary" onClick={() => setPersonal(false)}>使用兼容部署 Token</button>}</section></main></div>;
+  return <div className="login-page"><div className="login-brand"><Logo/><strong>AgentEval</strong><ThemeSelect/></div><main className="personal-login"><section className="login-card"><h1>团队账号登录</h1><p>会话由服务端管理，可过期、撤销和安全退出。</p><form onSubmit={submit}><label className="field"><span>用户名</span><input autoComplete="username" required maxLength={80} value={username} onChange={e => setUsername(e.target.value)}/></label><label className="field"><span>密码</span><input type="password" autoComplete="current-password" required maxLength={256} value={password} onChange={e => setPassword(e.target.value)}/></label><ErrorBox message={error}/><button className="button primary" disabled={busy}>{busy ? '正在验证…' : '登录团队工作台'}</button></form>{!options.initialized && <p>首位管理员需在部署端执行 init-admin 初始化；此处不提供公开注册。</p>}{options.legacy_enabled && <button className="button secondary" onClick={() => setPersonal(false)}>使用兼容部署 Token</button>}</section></main></div>;
 }
 
 export function Members({ api, projectId, value, changed, disabled = false, label = '负责人' }: { api: API; projectId: string; value: string; changed: (id: string) => void; disabled?: boolean; label?: string }) {

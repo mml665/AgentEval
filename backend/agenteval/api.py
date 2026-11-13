@@ -465,6 +465,8 @@ def create_app(settings=None):
     install_product(router, settings, database, get, serialize, create_run, runner)
     from agenteval.workflow_api import install as install_workflows
     install_workflows(router, settings, sessions, database, get, serialize, create_run)
+    from agenteval.insights import install as install_insights
+    install_insights(router, database, get)
     app.include_router(router)
     # Hash routes stay in the browser, so API 404s never fall back to index.html.
     # Public static files contain no credentials or business data.

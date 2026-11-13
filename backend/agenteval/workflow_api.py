@@ -44,7 +44,15 @@ def install(router, settings, sessions, database, get, serialize, create_run):
         own(session, body.project_id, body.agent_version_id, body.profile_version_id)
         bv = get(session, BenchmarkVersion, body.benchmark_version_id)
         if get(session, Benchmark, bv.benchmark_id).project_id != body.project_id: raise HTTPException(422, detail={"code": "PROJECT_MISMATCH"})
-        return create_run(RunCreate(**body.model_dump(include=set(RunCreate.model_fields))), tasks, "reuse:"+body.request_key, session)
+        # Serialize same-project submissions so a concurrent retry sees the committed receipt.
+        session.rollback()
+        if session.bind.dialect.name == "sqlite":
+            lock_security(session)
+        else:
+            session.get(Project, body.project_id, with_for_update=True)
+        result = create_run(RunCreate(**body.model_dump(include=set(RunCreate.model_fields))), tasks, "reuse:"+body.request_key, session)
+        session.commit()
+        return result
 
     @router.get("/onboarding/requests/{request_key}")
     def request_result(request_key: str, request: Request, project_id: str | None = None, session=Depends(database)):
