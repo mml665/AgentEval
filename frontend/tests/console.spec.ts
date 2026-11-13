@@ -1,4 +1,5 @@
 import { test, expect, type Page } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 
 const token = 'local-browser-test-token-only';
 
@@ -18,7 +19,7 @@ async function login(page: Page) {
   await page.goto('/');
   await page.getByLabel('访问令牌', { exact: true }).fill(token);
   await page.getByRole('button', { name: '进入工作台' }).click();
-  await expect(page.getByRole('navigation', { name: '主导航' })).toBeAttached();
+  await expect(page.locator('main.content')).toBeAttached();
 }
 
 test('login rejects invalid token, then completes real evaluation, evidence and regression flow', async ({ page }) => {
@@ -546,7 +547,7 @@ test('personal sessions restore, members own issues, viewers cannot write, and r
   await page.getByRole('checkbox', { name: '分配给我', exact: true }).check();
   await expect(page.locator('tbody tr')).toHaveCount(1);
   await page.screenshot({ path: '../.build/team-b-member.png', fullPage: true });
-  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('button', { name: /^退出登录/ }).click();
   await expect(page.getByLabel('访问令牌', { exact: true })).toBeVisible();
   await personal('browserviewer');
   await expect(page.getByText('当前项目为只读权限，可查看结果和导出报告。', { exact: true })).toBeVisible();
@@ -635,7 +636,7 @@ test('protected views keep secrets hidden, policy UI versions settings, and orig
   expect(await ordinary.text()).not.toContain(secret); expect(await ordinary.text()).not.toContain('13800000000');
   const denied = await request.post(`/api/v1/protection/evaluations/${run.id}/raw`, { headers, data: { reason: 'Shared identity must not see originals' } });
   expect(denied.status()).toBe(403);
-  await page.getByRole('button', { name: '退出登录', exact: true }).click();
+  await page.getByRole('button', { name: /^退出登录/ }).click();
   await page.getByRole('button', { name: '使用个人账号登录', exact: true }).click();
   await page.getByLabel('用户名', { exact: true }).fill('fixtureadmin');
   await page.getByLabel('密码', { exact: true }).fill('browser-admin-password-fixture-only');
@@ -948,4 +949,88 @@ test('local calendar filters preserve UTC boundaries on a daylight saving transi
     expect(query.get('created_before')).toBe('2026-03-09T03:59:59.999999Z');
     await expect(page.getByLabel('结束日期（America/New_York）')).toHaveValue('2026-03-08');
   } finally { await context.close(); }
+});
+
+test('core workflows pass accessibility scans and support keyboard navigation', async ({ page, request }) => {
+  test.setTimeout(120_000);
+  const scanned: { state: string; passed: number; needsReview: { id: string; targets: unknown[] }[] }[] = [];
+  const headers = { Authorization: `Bearer ${token}` };
+  const f = await fixture(async (path, data) => {
+    const result = await request.post(`/api/v1/${path}`, { headers, data });
+    expect(result.ok(), await result.text()).toBeTruthy();
+    return result.json();
+  }, '无障碍回归项目');
+  async function scan(name: string) {
+    const result = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa']).analyze();
+    scanned.push({ state: name, passed: result.passes.length, needsReview: result.incomplete.map(rule => ({ id: rule.id, targets: rule.nodes.map(node => node.target) })) });
+    const violations = result.violations.map(rule => ({
+      id: rule.id, nodes: rule.nodes.map(node => ({ target: node.target, summary: node.failureSummary })),
+    }));
+    expect.soft(violations, name).toEqual([]);
+  }
+  await page.goto(`/#/overview?project_id=${f.project.id}`);
+  await expect(page.getByLabel('访问令牌')).toBeVisible();
+  await scan('令牌登录');
+  await page.getByRole('button', { name: '使用个人账号登录' }).click();
+  await scan('个人账号登录');
+  await page.getByRole('button', { name: '使用兼容部署 Token' }).click();
+  await page.getByLabel('访问令牌').fill(token);
+  await page.getByRole('button', { name: '进入工作台' }).click();
+  await expect(page.getByLabel('当前项目')).toHaveValue(f.project.id);
+  await expect(page.getByLabel('候选版本', { exact: true })).toHaveValue(f.av.id);
+  const skip = page.getByRole('link', { name: '跳到主要内容' });
+  await skip.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('main')).toBeFocused();
+  await expect(page.getByRole('heading', { name: '质量工作台', exact: true })).toBeVisible();
+  await scan('质量工作台');
+  for (const title of ['开始评测', '评测任务', 'Bad Case 管理', '发布决策', '团队与凭据']) {
+    await page.getByRole('navigation', { name: '主导航' }).getByRole('link', { name: title, exact: true }).click();
+    await expect(page.getByRole('main')).toBeFocused();
+    if (title === '评测任务') await expect(page.locator('.task-table tbody tr')).toHaveCount(1);
+    if (title === '团队与凭据') await expect(page.getByRole('heading', { name: '证据保护与留存' })).toBeVisible();
+    await scan(title);
+  }
+  await page.goto(`/#/runs/${f.run.id}?project_id=${f.project.id}`);
+  await expect(page.getByRole('heading', { name: '用例执行结果' })).toBeVisible();
+  await scan('运行详情');
+  const inspect = page.getByRole('button', { name: '查看证据', exact: true });
+  await inspect.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: /执行证据/ });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole('heading', { name: '执行链路与时间线' })).toBeVisible();
+  const span = dialog.locator('.span-row').last();
+  await span.press('Enter');
+  await expect(span).toHaveAttribute('aria-pressed', 'true');
+  await scan('证据弹窗');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(inspect).toBeFocused();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  const menu = page.getByRole('button', { name: '打开导航' });
+  await expect(menu).toHaveAttribute('aria-expanded', 'false');
+  await expect(page.locator('#workspace-navigation')).toHaveAttribute('inert', '');
+  await page.getByRole('link', { name: '跳到主要内容' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(menu).toBeFocused();
+  await menu.focus();
+  await page.keyboard.press('Enter');
+  const drawer = page.getByRole('dialog', { name: '工作台导航' });
+  await expect(drawer.getByRole('link', { name: '评测任务', exact: true })).toBeFocused();
+  await expect(page.locator('.main-shell')).toHaveAttribute('inert', '');
+  await drawer.getByRole('button', { name: '退出登录' }).focus();
+  await page.keyboard.press('Tab');
+  await expect(drawer.getByRole('button', { name: '收起导航' })).toBeFocused();
+  await scan('移动端导航');
+  await page.keyboard.press('Escape');
+  await expect(drawer).toHaveCount(0);
+  await expect(menu).toBeFocused();
+  await page.keyboard.press('Enter');
+  await drawer.getByRole('link', { name: '评测任务', exact: true }).press('Enter');
+  await expect(page.getByRole('heading', { name: '评测任务', exact: true })).toBeVisible();
+  await expect(page.getByRole('main')).toBeFocused();
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile('../.build/accessibility-checks.json', JSON.stringify(scanned, null, 2));
 });

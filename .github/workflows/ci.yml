@@ -43,6 +43,7 @@ jobs:
             .build/protection-*.png
             .build/workflow-*.png
             .build/workflow-scope-navigation.json
+            .build/accessibility-checks.json
   test:
     runs-on: ubuntu-latest
     steps:

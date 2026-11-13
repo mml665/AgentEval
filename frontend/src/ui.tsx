@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useId, useRef, type ReactNode } from 'react';
 
 const paths: Record<string, ReactNode> = {
   grid: <><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></>,
@@ -40,10 +40,19 @@ export function Heading({ eyebrow, title, description, action }: { eyebrow?: str
 
 export function Modal({ title, children, onClose, wide = false }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { const dialog = ref.current!; dialog.showModal(); return () => dialog.close(); }, []);
-  return <dialog ref={ref} className={`modal ${wide ? 'modal-wide' : ''}`} onCancel={onClose} onClick={e => { if (e.target === e.currentTarget) onClose(); }}><div className="modal-header"><h2>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭弹窗"><Icon name="close"/></button></div>{children}</dialog>;
+  const titleId = useId();
+  useEffect(() => {
+    const dialog = ref.current!;
+    const trigger = document.activeElement;
+    dialog.showModal();
+    return () => {
+      dialog.close();
+      if (trigger instanceof HTMLElement && trigger.isConnected && document.activeElement === document.body) trigger.focus();
+    };
+  }, []);
+  return <dialog ref={ref} aria-labelledby={titleId} className={`modal ${wide ? 'modal-wide' : ''}`} onCancel={event => { event.preventDefault(); onClose(); }} onClick={e => { if (e.target === e.currentTarget) onClose(); }}><div className="modal-header"><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="关闭弹窗"><Icon name="close"/></button></div>{children}</dialog>;
 }
 
 export function Pager({ page, total, size = 10, loading = false, onChange }: { page: number; total: number; size?: number; loading?: boolean; onChange: (page: number) => void }) {
-  return <div className="pager" aria-label="分页" aria-busy={loading}><span>共 {total} 条 · 第 {page + 1} / {Math.max(1, Math.ceil(total / size))} 页</span><button className="button secondary" disabled={loading || page === 0} onClick={() => onChange(page - 1)}>上一页</button><button className="button secondary" disabled={loading || (page + 1) * size >= total} onClick={() => onChange(page + 1)}>下一页</button></div>;
+  return <div className="pager" role="group" aria-label="分页" aria-busy={loading}><span>共 {total} 条 · 第 {page + 1} / {Math.max(1, Math.ceil(total / size))} 页</span><button className="button secondary" disabled={loading || page === 0} onClick={() => onChange(page - 1)}>上一页</button><button className="button secondary" disabled={loading || (page + 1) * size >= total} onClick={() => onChange(page + 1)}>下一页</button></div>;
 }
